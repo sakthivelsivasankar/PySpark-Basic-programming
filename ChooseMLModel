@@ -142,4 +142,23 @@ for name, model in models:
 
 #5.4 Select Best Model
 #We now have 6 models and accuracy estimations for each. We need to compare the models to each other and select the most accurate.
-    
+# Compare Algorithms
+fig = plt.figure()
+fig.suptitle('Algorithm Comparison')
+ax = fig.add_subplot(111)
+plt.boxplot(results)
+ax.set_xticklabels(names)
+plt.show()
+
+#You can see that the box and whisker plots are squashed at the top of the range, with many samples achieving 100% accuracy.
+
+
+#6.Make Predictions
+#The KNN algorithm is very simple and was pretty accurate model based on our tests. Now we want to get an idea of the accuracy of the model on our validation set.
+# Make predictions on validation dataset
+knn = KNeighborsClassifier()
+knn.fit(X_train, Y_train)
+predictions = knn.predict(X_validation)
+print(accuracy_score(Y_validation, predictions))
+print(confusion_matrix(Y_validation, predictions))
+print(classification_report(Y_validation, predictions))
