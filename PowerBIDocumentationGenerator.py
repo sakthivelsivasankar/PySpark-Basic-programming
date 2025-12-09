@@ -6,6 +6,18 @@ from datetime import datetime
 import re
 import glob
 
+def safe_str(value, default=''):
+    """Safely convert value to string, handling NaN/None"""
+    if pd.isna(value) or value is None:
+        return default
+    return str(value)
+
+def safe_lower(value, default=''):
+    """Safely convert value to lowercase string"""
+    if pd.isna(value) or value is None:
+        return default
+    return str(value).lower()
+
 class PowerBIDocumentationGenerator:
     def __init__(self, columns_df, measures_df, relationships_df, semantic_model_name, mapping_df=None):
         """Initialize with DataFrames and semantic model name
@@ -18,9 +30,20 @@ class PowerBIDocumentationGenerator:
             mapping_df: Optional DataFrame with Oracle to Power BI mapping
         """
         self.semantic_model_name = semantic_model_name
-        self.columns_df = columns_df
-        self.measures_df = measures_df
-        self.relationships_df = relationships_df
+        
+        # Clean the dataframes - remove rows with null Table or Column names
+        self.columns_df = columns_df.copy()
+        self.columns_df = self.columns_df[self.columns_df['Table'].notna() & self.columns_df['Column'].notna()]
+        
+        self.measures_df = measures_df.copy()
+        
+        self.relationships_df = relationships_df.copy()
+        # Clean relationships - remove rows with null table/column references
+        required_rel_cols = ['From Table', 'From Column', 'To Table', 'To Column']
+        for col in required_rel_cols:
+            if col in self.relationships_df.columns:
+                self.relationships_df = self.relationships_df[self.relationships_df[col].notna()]
+        
         self.mapping_df = mapping_df
         
         # Build physical table/column lookup cache for performance
@@ -37,8 +60,11 @@ class PowerBIDocumentationGenerator:
         self._physical_column_cache = {}
         
         for _, row in self.columns_df.iterrows():
-            table_name = row['Table']
-            column_name = row['Column']
+            table_name = safe_str(row.get('Table', ''))
+            column_name = safe_str(row.get('Column', ''))
+            
+            if not table_name:
+                continue
             
             # Cache physical table name
             if table_name not in self._physical_table_cache:
@@ -46,9 +72,10 @@ class PowerBIDocumentationGenerator:
                 self._physical_table_cache[table_name] = physical_table
             
             # Cache physical column name
-            cache_key = (table_name, column_name)
-            physical_col = self._extract_physical_column_name(row)
-            self._physical_column_cache[cache_key] = physical_col
+            if column_name:
+                cache_key = (table_name, column_name)
+                physical_col = self._extract_physical_column_name(row)
+                self._physical_column_cache[cache_key] = physical_col
     
     def _extract_physical_table_name(self, row):
         """Extract physical table name from a row"""
@@ -122,16 +149,20 @@ class PowerBIDocumentationGenerator:
     
     def _classify_tables(self):
         """Classify tables as Fact or Dimension based on naming conventions"""
-        tables = self.columns_df['Table'].unique()
+        tables = self.columns_df['Table'].dropna().unique()
         
         for table in tables:
-            table_lower = table.lower()
+            table_str = safe_str(table)
+            if not table_str:
+                continue
+                
+            table_lower = table_str.lower()
             # Fact table indicators
             if any(prefix in table_lower for prefix in ['fact', 'fact_', 'fact -']):
-                self.fact_tables.append(table)
+                self.fact_tables.append(table_str)
             # Dimension table indicators
             elif any(prefix in table_lower for prefix in ['dim', 'dim_', 'dimension']):
-                self.dim_tables.append(table)
+                self.dim_tables.append(table_str)
             else:
                 # Check relationships to determine if it's a fact or dimension
                 # Tables with many outgoing relationships are likely facts
@@ -139,51 +170,77 @@ class PowerBIDocumentationGenerator:
                 incoming = len(self.relationships_df[self.relationships_df['To Table'] == table])
                 
                 if outgoing > incoming:
-                    self.fact_tables.append(table)
+                    self.fact_tables.append(table_str)
                 else:
-                    self.dim_tables.append(table)
+                    self.dim_tables.append(table_str)
     
     def get_tables_summary(self):
         """Create tables overview summary with Semantic Model Name as first column"""
         summary = []
         
-        for table in self.columns_df['Table'].unique():
+        for table in self.columns_df['Table'].dropna().unique():
+            table_str = safe_str(table)
+            if not table_str:
+                continue
+                
             table_data = self.columns_df[self.columns_df['Table'] == table]
             
             # Determine table type
-            if table in self.fact_tables:
+            if table_str in self.fact_tables:
                 table_type = "Fact"
-            elif table in self.dim_tables:
+            elif table_str in self.dim_tables:
                 table_type = "Dimension"
             else:
                 table_type = "Other"
             
             # Get physical table name from cache
-            physical_table = self._physical_table_cache.get(table, '')
+            physical_table = self._physical_table_cache.get(table_str, '')
             
             # Count relationships
             outgoing_rels = len(self.relationships_df[self.relationships_df['From Table'] == table])
             incoming_rels = len(self.relationships_df[self.relationships_df['To Table'] == table])
             
             # Get related tables
-            related_tables = self._get_related_tables(table)
+            related_tables = self._get_related_tables(table_str)
             
-            # Get key columns
-            key_cols = table_data[table_data['Is Key'].astype(str).str.lower() == 'true']['Column'].tolist()
+            # Get key columns - safely handle Is Key column
+            key_cols = []
+            if 'Is Key' in table_data.columns:
+                for _, row in table_data.iterrows():
+                    is_key = safe_lower(row.get('Is Key', ''))
+                    if is_key == 'true':
+                        key_cols.append(safe_str(row.get('Column', '')))
             
-            # Get hidden column count
-            hidden_cols = len(table_data[table_data['Is Hidden'].astype(str).str.lower() == 'true'])
+            # Get hidden column count - safely handle Is Hidden column
+            hidden_cols = 0
+            if 'Is Hidden' in table_data.columns:
+                for _, row in table_data.iterrows():
+                    is_hidden = safe_lower(row.get('Is Hidden', ''))
+                    if is_hidden == 'true':
+                        hidden_cols += 1
+            
+            # Get description safely
+            description = ''
+            if not table_data.empty and 'Table Description' in table_data.columns:
+                desc_val = table_data['Table Description'].iloc[0]
+                description = safe_str(desc_val)
+            
+            # Get storage mode safely
+            storage_mode = ''
+            if not table_data.empty and 'Storage Mode' in table_data.columns:
+                storage_val = table_data['Storage Mode'].iloc[0]
+                storage_mode = safe_str(storage_val)
             
             summary.append({
                 'Semantic Model': self.semantic_model_name,
-                'Table Name': table,
+                'Table Name': table_str,
                 'Table Type': table_type,
-                'Physical/ETL Source Table': physical_table if physical_table else '',
-                'Description': table_data['Table Description'].iloc[0] if not table_data.empty and pd.notna(table_data['Table Description'].iloc[0]) else '',
+                'Physical/ETL Source Table': safe_str(physical_table),
+                'Description': description,
                 'Column Count': len(table_data),
                 'Key Columns': ', '.join(key_cols) if key_cols else '',
                 'Hidden Columns': hidden_cols,
-                'Storage Mode': table_data['Storage Mode'].iloc[0] if not table_data.empty and 'Storage Mode' in table_data.columns else '',
+                'Storage Mode': storage_mode,
                 'Outgoing Relationships': outgoing_rels,
                 'Incoming Relationships': incoming_rels,
                 'Related Tables': ', '.join(related_tables) if related_tables else ''
@@ -196,8 +253,11 @@ class PowerBIDocumentationGenerator:
         glossary_data = []
         
         for _, row in self.columns_df.iterrows():
-            table_name = row['Table']
-            column_name = row['Column']
+            table_name = safe_str(row.get('Table', ''))
+            column_name = safe_str(row.get('Column', ''))
+            
+            if not table_name or not column_name:
+                continue
             
             # Determine table type
             if table_name in self.fact_tables:
@@ -219,19 +279,19 @@ class PowerBIDocumentationGenerator:
                 'Table Type': table_type,
                 'Table Name': table_name,
                 'Column Name': column_name,
-                'Physical/ETL Source Table': physical_table if physical_table else '',
-                'Physical/ETL Source Column': physical_column if physical_column else '',
-                'Column Description': row.get('Column Description', ''),
-                'Data Type': row.get('Data Type', ''),
-                'Column Type': row.get('Column Type', ''),
-                'Is Key': row.get('Is Key', ''),
-                'Is Hidden': row.get('Is Hidden', ''),
+                'Physical/ETL Source Table': safe_str(physical_table),
+                'Physical/ETL Source Column': safe_str(physical_column),
+                'Column Description': safe_str(row.get('Column Description', '')),
+                'Data Type': safe_str(row.get('Data Type', '')),
+                'Column Type': safe_str(row.get('Column Type', '')),
+                'Is Key': safe_str(row.get('Is Key', '')),
+                'Is Hidden': safe_str(row.get('Is Hidden', '')),
                 'Is Relationship Key': 'Yes' if is_relationship_key else 'No',
-                'Format String': row.get('Format String', ''),
-                'Data Category': row.get('Data Category', ''),
-                'Summarize By': row.get('Summarize By', ''),
-                'Source Column': row.get('Source Column', ''),
-                'Source Query/Expression': row.get('Source Query/Expression', '')
+                'Format String': safe_str(row.get('Format String', '')),
+                'Data Category': safe_str(row.get('Data Category', '')),
+                'Summarize By': safe_str(row.get('Summarize By', '')),
+                'Source Column': safe_str(row.get('Source Column', '')),
+                'Source Query/Expression': safe_str(row.get('Source Query/Expression', ''))
             })
         
         return pd.DataFrame(glossary_data)
@@ -241,22 +301,23 @@ class PowerBIDocumentationGenerator:
         measures_data = []
         
         for _, row in self.measures_df.iterrows():
-            table_name = row.get('Table', '')
+            table_name = safe_str(row.get('Table', ''))
+            measure_name = safe_str(row.get('Measure', ''))
             
             # Get referenced tables and columns from DAX
-            dax_expr = row.get('DAX Expression', '')
+            dax_expr = safe_str(row.get('DAX Expression', ''))
             referenced_tables, referenced_columns = self._parse_dax_references(dax_expr)
             
             measures_data.append({
                 'Semantic Model': self.semantic_model_name,
                 'Table Name': table_name,
-                'Measure Name': row.get('Measure', ''),
-                'Description': row.get('Description', ''),
+                'Measure Name': measure_name,
+                'Description': safe_str(row.get('Description', '')),
                 'DAX Expression': dax_expr,
                 'DAX Explanation': self._explain_dax(dax_expr),
-                'Is Hidden': row.get('Is Hidden', ''),
-                'Format String': row.get('Format String', ''),
-                'Display Folder': row.get('Display Folder', ''),
+                'Is Hidden': safe_str(row.get('Is Hidden', '')),
+                'Format String': safe_str(row.get('Format String', '')),
+                'Display Folder': safe_str(row.get('Display Folder', '')),
                 'Referenced Tables': ', '.join(referenced_tables) if referenced_tables else '',
                 'Referenced Columns': ', '.join(referenced_columns) if referenced_columns else ''
             })
@@ -268,10 +329,13 @@ class PowerBIDocumentationGenerator:
         relationships_data = []
         
         for _, rel in self.relationships_df.iterrows():
-            from_table = rel['From Table']
-            from_column = rel['From Column']
-            to_table = rel['To Table']
-            to_column = rel['To Column']
+            from_table = safe_str(rel.get('From Table', ''))
+            from_column = safe_str(rel.get('From Column', ''))
+            to_table = safe_str(rel.get('To Table', ''))
+            to_column = safe_str(rel.get('To Column', ''))
+            
+            if not from_table or not to_table:
+                continue
             
             # Get physical table/column names from cache
             from_physical_table = self._physical_table_cache.get(from_table, '')
@@ -284,34 +348,34 @@ class PowerBIDocumentationGenerator:
             to_table_type = 'Fact' if to_table in self.fact_tables else ('Dimension' if to_table in self.dim_tables else 'Other')
             
             # Interpret cardinality
-            from_card = str(rel.get('From Cardinality', ''))
-            to_card = str(rel.get('To Cardinality', ''))
+            from_card = safe_str(rel.get('From Cardinality', ''))
+            to_card = safe_str(rel.get('To Cardinality', ''))
             cardinality_desc = self._interpret_cardinality(from_card, to_card)
             
             # Get cross-filter direction description
-            cross_filter = rel.get('Cross Filter Direction', '')
+            cross_filter = safe_str(rel.get('Cross Filter Direction', ''))
             cross_filter_desc = self._interpret_cross_filter(cross_filter)
             
             relationships_data.append({
                 'Semantic Model': self.semantic_model_name,
-                'Relationship ID': rel.get('Relationship ID', ''),
+                'Relationship ID': safe_str(rel.get('Relationship ID', '')),
                 'From Table': from_table,
                 'From Table Type': from_table_type,
                 'From Column': from_column,
-                'From Physical/ETL Source Table': from_physical_table if from_physical_table else '',
-                'From Physical/ETL Source Column': from_physical_column if from_physical_column else '',
+                'From Physical/ETL Source Table': safe_str(from_physical_table),
+                'From Physical/ETL Source Column': safe_str(from_physical_column),
                 'To Table': to_table,
                 'To Table Type': to_table_type,
                 'To Column': to_column,
-                'To Physical/ETL Source Table': to_physical_table if to_physical_table else '',
-                'To Physical/ETL Source Column': to_physical_column if to_physical_column else '',
+                'To Physical/ETL Source Table': safe_str(to_physical_table),
+                'To Physical/ETL Source Column': safe_str(to_physical_column),
                 'From Cardinality': from_card,
                 'To Cardinality': to_card,
                 'Cardinality Description': cardinality_desc,
                 'Cross Filter Direction': cross_filter,
                 'Cross Filter Description': cross_filter_desc,
-                'Is Active': rel.get('Is Active', ''),
-                'Security Filtering': rel.get('Security Filtering', '')
+                'Is Active': safe_str(rel.get('Is Active', '')),
+                'Security Filtering': safe_str(rel.get('Security Filtering', ''))
             })
         
         return pd.DataFrame(relationships_data)
@@ -321,8 +385,11 @@ class PowerBIDocumentationGenerator:
         lineage_data = []
         
         for _, row in self.columns_df.iterrows():
-            table_name = row['Table']
-            column_name = row['Column']
+            table_name = safe_str(row.get('Table', ''))
+            column_name = safe_str(row.get('Column', ''))
+            
+            if not table_name or not column_name:
+                continue
             
             # Get physical info
             physical_table = self._physical_table_cache.get(table_name, '')
@@ -332,16 +399,21 @@ class PowerBIDocumentationGenerator:
             if physical_table or physical_column:
                 table_type = 'Fact' if table_name in self.fact_tables else ('Dimension' if table_name in self.dim_tables else 'Other')
                 
+                # Determine transformation type
+                transformation = 'Direct Mapping'
+                if physical_column and physical_column.lower() != column_name.lower():
+                    transformation = 'Column Renamed'
+                
                 lineage_data.append({
                     'Semantic Model': self.semantic_model_name,
-                    'Physical/ETL Source Table': physical_table if physical_table else table_name,
-                    'Physical/ETL Source Column': physical_column if physical_column else column_name,
+                    'Physical/ETL Source Table': safe_str(physical_table) if physical_table else table_name,
+                    'Physical/ETL Source Column': safe_str(physical_column) if physical_column else column_name,
                     'Semantic Table': table_name,
                     'Semantic Column': column_name,
                     'Table Type': table_type,
-                    'Data Type': row.get('Data Type', ''),
-                    'Transformation': 'Direct Mapping' if (not physical_column or physical_column.lower() == column_name.lower()) else 'Column Renamed',
-                    'Source Query/Expression': row.get('Source Query/Expression', '')
+                    'Data Type': safe_str(row.get('Data Type', '')),
+                    'Transformation': transformation,
+                    'Source Query/Expression': safe_str(row.get('Source Query/Expression', ''))
                 })
         
         return pd.DataFrame(lineage_data)
@@ -353,8 +425,15 @@ class PowerBIDocumentationGenerator:
         # Get unique relationship columns
         relationship_cols = set()
         for _, rel in self.relationships_df.iterrows():
-            relationship_cols.add((rel['From Table'], rel['From Column']))
-            relationship_cols.add((rel['To Table'], rel['To Column']))
+            from_table = safe_str(rel.get('From Table', ''))
+            from_col = safe_str(rel.get('From Column', ''))
+            to_table = safe_str(rel.get('To Table', ''))
+            to_col = safe_str(rel.get('To Column', ''))
+            
+            if from_table and from_col:
+                relationship_cols.add((from_table, from_col))
+            if to_table and to_col:
+                relationship_cols.add((to_table, to_col))
         
         for table_name, column_name in relationship_cols:
             # Get column details
@@ -372,20 +451,25 @@ class PowerBIDocumentationGenerator:
                 # Find related tables through this key
                 related = []
                 for _, rel in self.relationships_df.iterrows():
-                    if rel['From Table'] == table_name and rel['From Column'] == column_name:
-                        related.append(rel['To Table'])
-                    elif rel['To Table'] == table_name and rel['To Column'] == column_name:
-                        related.append(rel['From Table'])
+                    rel_from_table = safe_str(rel.get('From Table', ''))
+                    rel_from_col = safe_str(rel.get('From Column', ''))
+                    rel_to_table = safe_str(rel.get('To Table', ''))
+                    rel_to_col = safe_str(rel.get('To Column', ''))
+                    
+                    if rel_from_table == table_name and rel_from_col == column_name:
+                        related.append(rel_to_table)
+                    elif rel_to_table == table_name and rel_to_col == column_name:
+                        related.append(rel_from_table)
                 
                 key_data.append({
                     'Semantic Model': self.semantic_model_name,
                     'Table Name': table_name,
                     'Table Type': table_type,
                     'Key Column': column_name,
-                    'Physical/ETL Source Table': physical_table if physical_table else '',
-                    'Physical/ETL Source Column': physical_column if physical_column else '',
-                    'Data Type': row.get('Data Type', ''),
-                    'Is Primary Key': row.get('Is Key', ''),
+                    'Physical/ETL Source Table': safe_str(physical_table),
+                    'Physical/ETL Source Column': safe_str(physical_column),
+                    'Data Type': safe_str(row.get('Data Type', '')),
+                    'Is Primary Key': safe_str(row.get('Is Key', '')),
                     'Related Tables': ', '.join(related) if related else ''
                 })
         
@@ -396,38 +480,44 @@ class PowerBIDocumentationGenerator:
         hidden_data = []
         
         # Hidden columns
-        hidden_cols = self.columns_df[self.columns_df['Is Hidden'].astype(str).str.lower() == 'true']
-        for _, row in hidden_cols.iterrows():
-            table_name = row['Table']
-            column_name = row['Column']
-            physical_table = self._physical_table_cache.get(table_name, '')
-            physical_column = self._physical_column_cache.get((table_name, column_name), '')
-            
-            hidden_data.append({
-                'Semantic Model': self.semantic_model_name,
-                'Object Type': 'Column',
-                'Table Name': table_name,
-                'Object Name': column_name,
-                'Physical/ETL Source Table': physical_table if physical_table else '',
-                'Physical/ETL Source Column': physical_column if physical_column else '',
-                'Description': row.get('Column Description', ''),
-                'Reason for Hiding': 'Technical column / Not for end-user reporting'
-            })
+        for _, row in self.columns_df.iterrows():
+            is_hidden = safe_lower(row.get('Is Hidden', ''))
+            if is_hidden == 'true':
+                table_name = safe_str(row.get('Table', ''))
+                column_name = safe_str(row.get('Column', ''))
+                
+                if not table_name or not column_name:
+                    continue
+                
+                physical_table = self._physical_table_cache.get(table_name, '')
+                physical_column = self._physical_column_cache.get((table_name, column_name), '')
+                
+                hidden_data.append({
+                    'Semantic Model': self.semantic_model_name,
+                    'Object Type': 'Column',
+                    'Table Name': table_name,
+                    'Object Name': column_name,
+                    'Physical/ETL Source Table': safe_str(physical_table),
+                    'Physical/ETL Source Column': safe_str(physical_column),
+                    'Description': safe_str(row.get('Column Description', '')),
+                    'Reason for Hiding': 'Technical column / Not for end-user reporting'
+                })
         
         # Hidden measures
         if 'Is Hidden' in self.measures_df.columns:
-            hidden_measures = self.measures_df[self.measures_df['Is Hidden'].astype(str).str.lower() == 'true']
-            for _, row in hidden_measures.iterrows():
-                hidden_data.append({
-                    'Semantic Model': self.semantic_model_name,
-                    'Object Type': 'Measure',
-                    'Table Name': row.get('Table', ''),
-                    'Object Name': row.get('Measure', ''),
-                    'Physical/ETL Source Table': '',
-                    'Physical/ETL Source Column': '',
-                    'Description': row.get('Description', ''),
-                    'Reason for Hiding': 'Intermediate calculation / Not for end-user reporting'
-                })
+            for _, row in self.measures_df.iterrows():
+                is_hidden = safe_lower(row.get('Is Hidden', ''))
+                if is_hidden == 'true':
+                    hidden_data.append({
+                        'Semantic Model': self.semantic_model_name,
+                        'Object Type': 'Measure',
+                        'Table Name': safe_str(row.get('Table', '')),
+                        'Object Name': safe_str(row.get('Measure', '')),
+                        'Physical/ETL Source Table': '',
+                        'Physical/ETL Source Column': '',
+                        'Description': safe_str(row.get('Description', '')),
+                        'Reason for Hiding': 'Intermediate calculation / Not for end-user reporting'
+                    })
         
         return pd.DataFrame(hidden_data)
     
@@ -440,7 +530,7 @@ class PowerBIDocumentationGenerator:
             'Semantic Model': self.semantic_model_name,
             'Category': 'Tables',
             'Metric': 'Total Tables',
-            'Value': len(self.columns_df['Table'].unique()),
+            'Value': len(self.columns_df['Table'].dropna().unique()),
             'Details': ''
         })
         stats.append({
@@ -464,20 +554,33 @@ class PowerBIDocumentationGenerator:
             'Value': len(self.columns_df),
             'Details': ''
         })
+        
+        # Count hidden columns safely
+        hidden_count = 0
+        for _, row in self.columns_df.iterrows():
+            if safe_lower(row.get('Is Hidden', '')) == 'true':
+                hidden_count += 1
         stats.append({
             'Semantic Model': self.semantic_model_name,
             'Category': 'Columns',
             'Metric': 'Hidden Columns',
-            'Value': len(self.columns_df[self.columns_df['Is Hidden'].astype(str).str.lower() == 'true']),
+            'Value': hidden_count,
             'Details': ''
         })
+        
+        # Count key columns safely
+        key_count = 0
+        for _, row in self.columns_df.iterrows():
+            if safe_lower(row.get('Is Key', '')) == 'true':
+                key_count += 1
         stats.append({
             'Semantic Model': self.semantic_model_name,
             'Category': 'Columns',
             'Metric': 'Key Columns',
-            'Value': len(self.columns_df[self.columns_df['Is Key'].astype(str).str.lower() == 'true']),
+            'Value': key_count,
             'Details': ''
         })
+        
         stats.append({
             'Semantic Model': self.semantic_model_name,
             'Category': 'Measures',
@@ -494,20 +597,21 @@ class PowerBIDocumentationGenerator:
         })
         
         # Data types distribution
-        data_type_counts = self.columns_df['Data Type'].value_counts()
-        for dtype, count in data_type_counts.items():
-            if pd.notna(dtype):
-                stats.append({
-                    'Semantic Model': self.semantic_model_name,
-                    'Category': 'Data Types',
-                    'Metric': f'{dtype} Columns',
-                    'Value': count,
-                    'Details': ''
-                })
+        if 'Data Type' in self.columns_df.columns:
+            data_type_counts = self.columns_df['Data Type'].dropna().value_counts()
+            for dtype, count in data_type_counts.items():
+                if pd.notna(dtype):
+                    stats.append({
+                        'Semantic Model': self.semantic_model_name,
+                        'Category': 'Data Types',
+                        'Metric': f'{dtype} Columns',
+                        'Value': count,
+                        'Details': ''
+                    })
         
         # Storage modes if available
         if 'Storage Mode' in self.columns_df.columns:
-            storage_counts = self.columns_df.groupby('Table')['Storage Mode'].first().value_counts()
+            storage_counts = self.columns_df.groupby('Table')['Storage Mode'].first().dropna().value_counts()
             for mode, count in storage_counts.items():
                 if pd.notna(mode):
                     stats.append({
@@ -524,27 +628,33 @@ class PowerBIDocumentationGenerator:
         """Get list of tables related to a given table"""
         related = set()
         
-        # From relationships where this table is the source
-        rels_out = self.relationships_df[self.relationships_df['From Table'] == table_name]
-        related.update(rels_out['To Table'].unique())
-        
-        # From relationships where this table is the target
-        rels_in = self.relationships_df[self.relationships_df['To Table'] == table_name]
-        related.update(rels_in['From Table'].unique())
+        for _, rel in self.relationships_df.iterrows():
+            from_table = safe_str(rel.get('From Table', ''))
+            to_table = safe_str(rel.get('To Table', ''))
+            
+            if from_table == table_name:
+                related.add(to_table)
+            elif to_table == table_name:
+                related.add(from_table)
         
         return list(related)
     
     def _is_column_in_relationship(self, table_name, column_name):
         """Check if a column is used in any relationship"""
-        from_match = ((self.relationships_df['From Table'] == table_name) & 
-                      (self.relationships_df['From Column'] == column_name))
-        to_match = ((self.relationships_df['To Table'] == table_name) & 
-                    (self.relationships_df['To Column'] == column_name))
-        return (from_match | to_match).any()
+        for _, rel in self.relationships_df.iterrows():
+            from_table = safe_str(rel.get('From Table', ''))
+            from_col = safe_str(rel.get('From Column', ''))
+            to_table = safe_str(rel.get('To Table', ''))
+            to_col = safe_str(rel.get('To Column', ''))
+            
+            if (from_table == table_name and from_col == column_name) or \
+               (to_table == table_name and to_col == column_name):
+                return True
+        return False
     
     def _parse_dax_references(self, dax_formula):
         """Parse DAX formula to extract referenced tables and columns"""
-        if pd.isna(dax_formula):
+        if not dax_formula:
             return [], []
         
         tables = set()
@@ -577,10 +687,10 @@ class PowerBIDocumentationGenerator:
     
     def _interpret_cross_filter(self, cross_filter):
         """Interpret cross-filter direction to human-readable description"""
-        if pd.isna(cross_filter):
+        if not cross_filter:
             return ""
         
-        cf = str(cross_filter).lower()
+        cf = cross_filter.lower()
         if cf in ['1', 'single', 'onedirection']:
             return "Single direction - filters flow from 'One' side to 'Many' side"
         elif cf in ['2', 'both', 'bidirectional']:
@@ -588,11 +698,11 @@ class PowerBIDocumentationGenerator:
         elif cf in ['3', 'automatic']:
             return "Automatic - Power BI determines filter direction"
         else:
-            return str(cross_filter)
+            return cross_filter
     
     def _explain_dax(self, dax_formula):
         """Provide simple explanation for DAX formulas"""
-        if pd.isna(dax_formula):
+        if not dax_formula:
             return ""
         
         dax = str(dax_formula).upper()
@@ -631,6 +741,179 @@ class PowerBIDocumentationGenerator:
             explanations.append("Year-over-year comparison")
         
         return '; '.join(explanations) if explanations else "Custom calculation"
+    
+    def generate_dbml(self, output_file='semantic_model.dbml'):
+        """Generate DBML file with star schema layout"""
+        dbml_content = []
+        
+        # Header
+        dbml_content.append("// Power BI Semantic Model - Star Schema")
+        dbml_content.append(f"// Semantic Model: {self.semantic_model_name}")
+        dbml_content.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        dbml_content.append("// Star Schema: Facts in center, Dimensions around them\n")
+        
+        # Project definition
+        safe_name = self._sanitize_name(self.semantic_model_name)
+        dbml_content.append(f"Project {safe_name} {{")
+        dbml_content.append("  database_type: 'Power BI'")
+        dbml_content.append(f"  Note: 'Semantic Model: {self.semantic_model_name}'")
+        dbml_content.append("}\n")
+        
+        # Generate Fact Tables first (center of star schema)
+        dbml_content.append("// ===== FACT TABLES =====")
+        for table in self.fact_tables:
+            dbml_content.append(self._generate_table_dbml(table, is_fact=True))
+        
+        dbml_content.append("\n// ===== DIMENSION TABLES =====")
+        for table in self.dim_tables:
+            dbml_content.append(self._generate_table_dbml(table, is_fact=False))
+        
+        # Generate relationships
+        dbml_content.append("\n// ===== RELATIONSHIPS =====")
+        dbml_content.extend(self._generate_relationships_dbml())
+        
+        # Write to file
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(dbml_content))
+        
+        print(f"   ✅ DBML file generated: {output_file}")
+        return output_file
+    
+    def _generate_table_dbml(self, table_name, is_fact=False):
+        """Generate DBML for a single table"""
+        table_data = self.columns_df[self.columns_df['Table'] == table_name]
+        
+        if table_data.empty:
+            return ""
+        
+        # Get physical table name from cache
+        physical_table = self._physical_table_cache.get(table_name)
+        
+        # Sanitize table name
+        safe_table_name = self._sanitize_name(table_name)
+        
+        dbml = [f"\nTable {safe_table_name} {{"]
+        
+        # Add physical table name in comment
+        if physical_table and safe_lower(physical_table) != safe_lower(table_name):
+            dbml.append(f"  // Physical/Source Table: {physical_table}")
+        
+        # Add table description if available
+        if 'Table Description' in table_data.columns:
+            table_desc = table_data['Table Description'].iloc[0]
+            if pd.notna(table_desc):
+                escaped_desc = safe_str(table_desc).replace("'", "\\'").replace('\n', ' ').replace('\r', '')
+                dbml.append(f"  Note: '{escaped_desc}'")
+        
+        # Map data types
+        type_map = {
+            'Int64': 'bigint',
+            'String': 'varchar',
+            'Decimal': 'decimal',
+            'Double': 'double',
+            'DateTime': 'datetime',
+            'Boolean': 'boolean',
+            'Date': 'date'
+        }
+        
+        # Add columns
+        for _, col in table_data.iterrows():
+            col_name = safe_str(col.get('Column', ''))
+            if not col_name:
+                continue
+            
+            safe_col_name = self._sanitize_name(col_name)
+            
+            pbi_type = safe_str(col.get('Data Type', 'varchar'))
+            data_type = type_map.get(pbi_type, 'varchar')
+            
+            # Build column definition
+            col_def = f"  {safe_col_name} {data_type}"
+            
+            # Add primary key indicator
+            if safe_lower(col.get('Is Key', '')) == 'true':
+                col_def += " [pk]"
+            
+            # Build note with description and physical column name
+            note_parts = []
+            
+            # Add column description
+            col_desc = col.get('Column Description')
+            if pd.notna(col_desc) and col_desc:
+                escaped = safe_str(col_desc).replace("'", "\\'").replace('\n', ' ').replace('\r', '')
+                note_parts.append(escaped)
+            
+            # Add physical source info from cache
+            physical_col = self._physical_column_cache.get((table_name, col_name))
+            if physical_col and safe_lower(physical_col) != safe_lower(col_name):
+                note_parts.append(f"Physical Column: {physical_col}")
+            
+            # Add source table if different
+            if physical_table and safe_lower(physical_table) != safe_lower(table_name):
+                note_parts.append(f"Source Table: {physical_table}")
+            
+            if note_parts:
+                col_def += f" [note: '{' | '.join(note_parts)}']"
+            
+            dbml.append(col_def)
+        
+        dbml.append("}")
+        
+        return '\n'.join(dbml)
+    
+    def _generate_relationships_dbml(self):
+        """Generate DBML relationships"""
+        relationships = []
+        
+        for _, rel in self.relationships_df.iterrows():
+            from_table = safe_str(rel.get('From Table', ''))
+            from_col = safe_str(rel.get('From Column', ''))
+            to_table = safe_str(rel.get('To Table', ''))
+            to_col = safe_str(rel.get('To Column', ''))
+            
+            if not from_table or not to_table or not from_col or not to_col:
+                continue
+            
+            safe_from_table = self._sanitize_name(from_table)
+            safe_from_col = self._sanitize_name(from_col)
+            safe_to_table = self._sanitize_name(to_table)
+            safe_to_col = self._sanitize_name(to_col)
+            
+            # Determine relationship type
+            from_card = safe_str(rel.get('From Cardinality', ''))
+            to_card = safe_str(rel.get('To Cardinality', ''))
+            
+            if from_card == '2' and to_card == '1':
+                rel_type = ">"  # many-to-one
+            elif from_card == '1' and to_card == '2':
+                rel_type = "<"  # one-to-many
+            elif from_card == '1' and to_card == '1':
+                rel_type = "-"  # one-to-one
+            else:
+                rel_type = ">"  # default to many-to-one
+            
+            # Add relationship
+            rel_line = f"Ref: {safe_from_table}.{safe_from_col} {rel_type} {safe_to_table}.{safe_to_col}"
+            
+            # Add cross-filter direction as note
+            cross_filter = rel.get('Cross Filter Direction')
+            if pd.notna(cross_filter):
+                rel_line += f" [note: 'Cross-filter: {cross_filter}']"
+            
+            relationships.append(rel_line)
+        
+        return relationships
+    
+    def _sanitize_name(self, name):
+        """Sanitize table/column names for DBML"""
+        if pd.isna(name) or name is None:
+            return "unknown"
+        name = str(name).strip()
+        # Replace spaces and special characters
+        name = name.replace(' ', '_').replace('-', '_').replace('/', '_')
+        # Remove invalid characters
+        name = ''.join(c for c in name if c.isalnum() or c == '_')
+        return name if name else "unknown"
 
 
 class MultiModelDocumentationGenerator:
@@ -752,6 +1035,8 @@ class MultiModelDocumentationGenerator:
                 
             except Exception as e:
                 print(f"   ❌ Error processing {model_name}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         # Combine all DataFrames
@@ -842,6 +1127,7 @@ class MultiModelDocumentationGenerator:
                 
                 # Generate DBML
                 safe_name = model_name.replace(' ', '_').replace('-', '_')
+                safe_name = ''.join(c for c in safe_name if c.isalnum() or c == '_')
                 dbml_file = os.path.join(output_dir, f'{safe_name}.dbml')
                 generator.generate_dbml(dbml_file)
                 generated_files.append(dbml_file)
@@ -900,172 +1186,6 @@ class MultiModelDocumentationGenerator:
                 print(f"      • {os.path.basename(f)}")
         
         return glossary_file
-
-
-# Additional method for PowerBIDocumentationGenerator to generate DBML
-def generate_dbml(self, output_file='semantic_model.dbml'):
-    """Generate DBML file with star schema layout"""
-    dbml_content = []
-    
-    # Header
-    dbml_content.append("// Power BI Semantic Model - Star Schema")
-    dbml_content.append(f"// Semantic Model: {self.semantic_model_name}")
-    dbml_content.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    dbml_content.append("// Star Schema: Facts in center, Dimensions around them\n")
-    
-    # Project definition
-    safe_name = self.semantic_model_name.replace(' ', '_').replace('-', '_')
-    safe_name = ''.join(c for c in safe_name if c.isalnum() or c == '_')
-    dbml_content.append(f"Project {safe_name} {{")
-    dbml_content.append("  database_type: 'Power BI'")
-    dbml_content.append(f"  Note: 'Semantic Model: {self.semantic_model_name}'")
-    dbml_content.append("}\n")
-    
-    # Generate Fact Tables first (center of star schema)
-    dbml_content.append("// ===== FACT TABLES =====")
-    for table in self.fact_tables:
-        dbml_content.append(self._generate_table_dbml(table, is_fact=True))
-    
-    dbml_content.append("\n// ===== DIMENSION TABLES =====")
-    for table in self.dim_tables:
-        dbml_content.append(self._generate_table_dbml(table, is_fact=False))
-    
-    # Generate relationships
-    dbml_content.append("\n// ===== RELATIONSHIPS =====")
-    dbml_content.extend(self._generate_relationships_dbml())
-    
-    # Write to file
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(dbml_content))
-    
-    print(f"   ✅ DBML file generated: {output_file}")
-    return output_file
-
-def _generate_table_dbml(self, table_name, is_fact=False):
-    """Generate DBML for a single table"""
-    table_data = self.columns_df[self.columns_df['Table'] == table_name]
-    
-    if table_data.empty:
-        return ""
-    
-    # Get physical table name from cache
-    physical_table = self._physical_table_cache.get(table_name)
-    
-    # Sanitize table name
-    safe_table_name = table_name.replace(' ', '_').replace('-', '_').replace('/', '_')
-    safe_table_name = ''.join(c for c in safe_table_name if c.isalnum() or c == '_')
-    
-    dbml = [f"\nTable {safe_table_name} {{"]
-    
-    # Add physical table name in comment
-    if physical_table and physical_table.lower() != table_name.lower():
-        dbml.append(f"  // Physical/Source Table: {physical_table}")
-    
-    # Add table description if available
-    table_desc = table_data['Table Description'].iloc[0] if 'Table Description' in table_data.columns else None
-    if pd.notna(table_desc):
-        escaped_desc = str(table_desc).replace("'", "\\'").replace('\n', ' ').replace('\r', '')
-        dbml.append(f"  Note: '{escaped_desc}'")
-    
-    # Map data types
-    type_map = {
-        'Int64': 'bigint',
-        'String': 'varchar',
-        'Decimal': 'decimal',
-        'Double': 'double',
-        'DateTime': 'datetime',
-        'Boolean': 'boolean',
-        'Date': 'date'
-    }
-    
-    # Add columns
-    for _, col in table_data.iterrows():
-        col_name = col['Column'].replace(' ', '_').replace('-', '_').replace('/', '_')
-        col_name = ''.join(c for c in col_name if c.isalnum() or c == '_')
-        
-        pbi_type = col.get('Data Type', 'varchar')
-        data_type = type_map.get(str(pbi_type), 'varchar') if pd.notna(pbi_type) else 'varchar'
-        
-        # Build column definition
-        col_def = f"  {col_name} {data_type}"
-        
-        # Add primary key indicator
-        if pd.notna(col.get('Is Key')) and str(col['Is Key']).lower() == 'true':
-            col_def += " [pk]"
-        
-        # Build note with description and physical column name
-        note_parts = []
-        
-        # Add column description
-        col_desc = col.get('Column Description')
-        if pd.notna(col_desc):
-            escaped = str(col_desc).replace("'", "\\'").replace('\n', ' ').replace('\r', '')
-            note_parts.append(escaped)
-        
-        # Add physical source info from cache
-        physical_col = self._physical_column_cache.get((table_name, col['Column']))
-        if physical_col and physical_col.lower() != col['Column'].lower():
-            note_parts.append(f"Physical Column: {physical_col}")
-        
-        # Add source table if different
-        if physical_table and physical_table.lower() != table_name.lower():
-            note_parts.append(f"Source Table: {physical_table}")
-        
-        if note_parts:
-            col_def += f" [note: '{' | '.join(note_parts)}']"
-        
-        dbml.append(col_def)
-    
-    dbml.append("}")
-    
-    return '\n'.join(dbml)
-
-def _generate_relationships_dbml(self):
-    """Generate DBML relationships"""
-    relationships = []
-    
-    for _, rel in self.relationships_df.iterrows():
-        from_table = rel['From Table'].replace(' ', '_').replace('-', '_').replace('/', '_')
-        from_table = ''.join(c for c in from_table if c.isalnum() or c == '_')
-        
-        from_col = rel['From Column'].replace(' ', '_').replace('-', '_').replace('/', '_')
-        from_col = ''.join(c for c in from_col if c.isalnum() or c == '_')
-        
-        to_table = rel['To Table'].replace(' ', '_').replace('-', '_').replace('/', '_')
-        to_table = ''.join(c for c in to_table if c.isalnum() or c == '_')
-        
-        to_col = rel['To Column'].replace(' ', '_').replace('-', '_').replace('/', '_')
-        to_col = ''.join(c for c in to_col if c.isalnum() or c == '_')
-        
-        # Determine relationship type
-        from_card = str(rel.get('From Cardinality', ''))
-        to_card = str(rel.get('To Cardinality', ''))
-        
-        if from_card == '2' and to_card == '1':
-            rel_type = ">"  # many-to-one
-        elif from_card == '1' and to_card == '2':
-            rel_type = "<"  # one-to-many
-        elif from_card == '1' and to_card == '1':
-            rel_type = "-"  # one-to-one
-        else:
-            rel_type = ">"  # default to many-to-one
-        
-        # Add relationship
-        rel_line = f"Ref: {from_table}.{from_col} {rel_type} {to_table}.{to_col}"
-        
-        # Add cross-filter direction as note
-        cross_filter = rel.get('Cross Filter Direction')
-        if pd.notna(cross_filter):
-            rel_line += f" [note: 'Cross-filter: {cross_filter}']"
-        
-        relationships.append(rel_line)
-    
-    return relationships
-
-# Add methods to the class
-PowerBIDocumentationGenerator.generate_dbml = generate_dbml
-PowerBIDocumentationGenerator._generate_table_dbml = _generate_table_dbml
-PowerBIDocumentationGenerator._generate_relationships_dbml = _generate_relationships_dbml
 
 
 # Example usage
