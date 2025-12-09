@@ -59,12 +59,17 @@ class PowerBIDocumentationGenerator:
     
     def _detect_measure_name_column(self):
         """Detect the column name used for measure names in the measures CSV"""
+        # Priority order for measure name columns
         possible_names = ['Measure', 'Name', 'Measure Name', 'MeasureName', 'measure', 'name']
         for col_name in possible_names:
             if col_name in self.measures_df.columns:
                 return col_name
-        # If no match, return the first column that's not 'Table' or common metadata columns
-        exclude_cols = ['Table', 'Description', 'DAX Expression', 'Is Hidden', 'Format String', 'Display Folder']
+        
+        # If no match, return the first column that's not a known metadata column
+        # IMPORTANT: Exclude 'Type' as it contains category info, not measure names
+        exclude_cols = ['Table', 'Type', 'Description', 'DAX Expression', 'Is Hidden', 
+                        'Format String', 'Display Folder', 'Expression', 'Data Type',
+                        'Data Category', 'Is Key', 'Column Type', 'Summarize By']
         for col in self.measures_df.columns:
             if col not in exclude_cols:
                 return col
@@ -328,28 +333,42 @@ class PowerBIDocumentationGenerator:
         """Create measures glossary with Semantic Model Name as first column and DAX explanations"""
         measures_data = []
         
+        # Print column names for debugging (only once)
+        if not hasattr(self, '_measures_columns_printed'):
+            print(f"   📋 Measures CSV columns: {list(self.measures_df.columns)}")
+            print(f"   📋 Detected measure name column: '{self.measure_name_column}'")
+            self._measures_columns_printed = True
+        
         for _, row in self.measures_df.iterrows():
             table_name = safe_str(row.get('Table', ''))
+            
+            # Get measure type (Measure, Calculated Table, etc.)
+            measure_type = safe_str(row.get('Type', ''))
             
             # Get measure name using detected column
             measure_name = safe_str(row.get(self.measure_name_column, ''))
             
-            # If measure name is still empty, try other common column names
-            if not measure_name:
-                for col in ['Measure', 'Name', 'Measure Name', 'MeasureName']:
-                    if col in row.index:
-                        measure_name = safe_str(row.get(col, ''))
-                        if measure_name:
+            # If measure name is still empty or same as type, try other common column names
+            if not measure_name or measure_name in ['Measure', 'Calculated Table', 'Column']:
+                for col in ['Measure', 'Name', 'Measure Name', 'MeasureName', 'Object Name', 'Object']:
+                    if col in row.index and col != 'Type':
+                        candidate = safe_str(row.get(col, ''))
+                        if candidate and candidate not in ['Measure', 'Calculated Table', 'Column']:
+                            measure_name = candidate
                             break
             
             # Get referenced tables and columns from DAX
             dax_expr = safe_str(row.get('DAX Expression', ''))
+            if not dax_expr:
+                dax_expr = safe_str(row.get('Expression', ''))  # Alternative column name
+            
             referenced_tables, referenced_columns = self._parse_dax_references(dax_expr)
             
             measures_data.append({
                 'Semantic Model': self.semantic_model_name,
                 'Semantic Table': table_name,
                 'Measure Name': measure_name,
+                'Type': measure_type,
                 'Description': safe_str(row.get('Description', '')),
                 'DAX Expression': dax_expr,
                 'DAX Explanation': self._explain_dax(dax_expr),
@@ -582,16 +601,22 @@ class PowerBIDocumentationGenerator:
                 if is_hidden == 'true':
                     # Get measure name using detected column
                     measure_name = safe_str(row.get(self.measure_name_column, ''))
-                    if not measure_name:
-                        for col in ['Measure', 'Name', 'Measure Name', 'MeasureName']:
-                            if col in row.index:
-                                measure_name = safe_str(row.get(col, ''))
-                                if measure_name:
+                    
+                    # If measure name is empty or same as type, try other common column names
+                    if not measure_name or measure_name in ['Measure', 'Calculated Table', 'Column']:
+                        for col in ['Measure', 'Name', 'Measure Name', 'MeasureName', 'Object Name', 'Object']:
+                            if col in row.index and col != 'Type':
+                                candidate = safe_str(row.get(col, ''))
+                                if candidate and candidate not in ['Measure', 'Calculated Table', 'Column']:
+                                    measure_name = candidate
                                     break
+                    
+                    # Get measure type
+                    measure_type = safe_str(row.get('Type', 'Measure'))
                     
                     hidden_data.append({
                         'Semantic Model': self.semantic_model_name,
-                        'Object Type': 'Measure',
+                        'Object Type': measure_type if measure_type else 'Measure',
                         'Semantic Table': safe_str(row.get('Table', '')),
                         'Object Name': measure_name,
                         'Physical/ETL Source Table': '',
@@ -1092,10 +1117,6 @@ class MultiModelDocumentationGenerator:
                 columns_df = self._read_csv_with_encoding(files['columns_file'])
                 measures_df = self._read_csv_with_encoding(files['measures_file'])
                 relationships_df = self._read_csv_with_encoding(files['relationships_file'])
-                
-                # Debug: Print measures columns for first model
-                if len(all_measures_glossary) == 0:
-                    print(f"   📋 Measures CSV columns: {list(measures_df.columns)}")
                 
                 # Create generator for this model
                 generator = PowerBIDocumentationGenerator(
