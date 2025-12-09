@@ -3,58 +3,25 @@ import os
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
+import re
+import glob
 
 class PowerBIDocumentationGenerator:
-    def __init__(self, columns_file, measures_file, relationships_file, mapping_file=None, semantic_model_name=None):
-        """Initialize with CSV file paths
+    def __init__(self, columns_df, measures_df, relationships_df, semantic_model_name, mapping_df=None):
+        """Initialize with DataFrames and semantic model name
         
         Args:
-            columns_file: Path to columns CSV file
-            measures_file: Path to measures CSV file
-            relationships_file: Path to relationships CSV file
-            mapping_file: Optional path to mapping file (CSV or Excel)
-            semantic_model_name: Optional name for the semantic model. If not provided,
-                                 it will be derived from the columns file name.
+            columns_df: DataFrame with columns metadata
+            measures_df: DataFrame with measures metadata
+            relationships_df: DataFrame with relationships metadata
+            semantic_model_name: Name of the semantic model
+            mapping_df: Optional DataFrame with Oracle to Power BI mapping
         """
-        # Derive semantic model name from file name if not provided
-        if semantic_model_name:
-            self.semantic_model_name = semantic_model_name
-        else:
-            # Extract from columns file name (e.g., 'SemanticModelName_COLUMNS.csv' -> 'SemanticModelName')
-            base_name = os.path.basename(columns_file)
-            self.semantic_model_name = base_name.replace('_COLUMNS.csv', '').replace('_columns.csv', '')
-            # Clean up common suffixes
-            for suffix in ['_COLUMNS', '_columns', '_Columns']:
-                if self.semantic_model_name.endswith(suffix):
-                    self.semantic_model_name = self.semantic_model_name[:-len(suffix)]
-        
-        # Read CSV files with encoding fallback
-        try:
-            self.columns_df = pd.read_csv(columns_file, encoding='utf-8')
-        except UnicodeDecodeError:
-            self.columns_df = pd.read_csv(columns_file, encoding='latin-1')
-        
-        try:
-            self.measures_df = pd.read_csv(measures_file, encoding='utf-8')
-        except UnicodeDecodeError:
-            self.measures_df = pd.read_csv(measures_file, encoding='latin-1')
-        
-        try:
-            self.relationships_df = pd.read_csv(relationships_file, encoding='utf-8')
-        except UnicodeDecodeError:
-            self.relationships_df = pd.read_csv(relationships_file, encoding='latin-1')
-        
-        # Read mapping file - handle both CSV and Excel formats
-        if mapping_file:
-            if mapping_file.endswith('.xlsx') or mapping_file.endswith('.xls'):
-                self.mapping_df = pd.read_excel(mapping_file)
-            else:
-                try:
-                    self.mapping_df = pd.read_csv(mapping_file, encoding='utf-8')
-                except UnicodeDecodeError:
-                    self.mapping_df = pd.read_csv(mapping_file, encoding='latin-1')
-        else:
-            self.mapping_df = None
+        self.semantic_model_name = semantic_model_name
+        self.columns_df = columns_df
+        self.measures_df = measures_df
+        self.relationships_df = relationships_df
+        self.mapping_df = mapping_df
         
         # Build physical table/column lookup cache for performance
         self._build_physical_mapping_cache()
@@ -176,189 +143,7 @@ class PowerBIDocumentationGenerator:
                 else:
                     self.dim_tables.append(table)
     
-    def generate_dbml(self, output_file='semantic_model.dbml'):
-        """Generate DBML file with star schema layout"""
-        dbml_content = []
-        
-        # Header
-        dbml_content.append("// Power BI Semantic Model - Star Schema")
-        dbml_content.append(f"// Semantic Model: {self.semantic_model_name}")
-        dbml_content.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        dbml_content.append("// Star Schema: Facts in center, Dimensions around them\n")
-        
-        # Project definition
-        dbml_content.append(f"Project {self._sanitize_name(self.semantic_model_name)} {{")
-        dbml_content.append("  database_type: 'Power BI'")
-        dbml_content.append("  Note: 'Migrated from Oracle ADW/OBIEE to Microsoft Fabric'")
-        dbml_content.append("}\n")
-        
-        # Generate Fact Tables first (center of star schema)
-        dbml_content.append("// ===== FACT TABLES =====")
-        for table in self.fact_tables:
-            dbml_content.append(self._generate_table_dbml(table, is_fact=True))
-        
-        dbml_content.append("\n// ===== DIMENSION TABLES =====")
-        for table in self.dim_tables:
-            dbml_content.append(self._generate_table_dbml(table, is_fact=False))
-        
-        # Generate relationships
-        dbml_content.append("\n// ===== RELATIONSHIPS =====")
-        dbml_content.extend(self._generate_relationships_dbml())
-        
-        # Write to file
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(dbml_content))
-        
-        print(f"✅ DBML file generated: {output_file}")
-        return output_file
-    
-    def _generate_table_dbml(self, table_name, is_fact=False):
-        """Generate DBML for a single table"""
-        table_data = self.columns_df[self.columns_df['Table'] == table_name]
-        
-        if table_data.empty:
-            return ""
-        
-        # Get physical table name from cache
-        physical_table = self._physical_table_cache.get(table_name)
-        
-        dbml = [f"\nTable {self._sanitize_name(table_name)} {{"]
-        
-        # Add physical table name in comment
-        if physical_table and physical_table.lower() != table_name.lower():
-            dbml.append(f"  // Physical/Source Table: {physical_table}")
-        
-        # Add table description if available
-        table_desc = table_data['Table Description'].iloc[0]
-        if pd.notna(table_desc):
-            dbml.append(f"  Note: '{self._escape_string(table_desc)}'")
-        
-        # Add columns
-        for _, col in table_data.iterrows():
-            col_name = self._sanitize_name(col['Column'])
-            data_type = self._map_data_type(col['Data Type'])
-            
-            # Build column definition
-            col_def = f"  {col_name} {data_type}"
-            
-            # Add primary key indicator
-            if pd.notna(col['Is Key']) and str(col['Is Key']).lower() == 'true':
-                col_def += " [pk]"
-            
-            # Build note with description and physical column name
-            note_parts = []
-            
-            # Add column description
-            if pd.notna(col['Column Description']):
-                note_parts.append(self._escape_string(col['Column Description']))
-            
-            # Add physical source info from cache
-            physical_col = self._physical_column_cache.get((table_name, col['Column']))
-            if physical_col and physical_col.lower() != col['Column'].lower():
-                note_parts.append(f"Physical Column: {physical_col}")
-            
-            # Add source table if different
-            if physical_table and physical_table.lower() != table_name.lower():
-                note_parts.append(f"Source Table: {physical_table}")
-            
-            if note_parts:
-                col_def += f" [note: '{' | '.join(note_parts)}']"
-            
-            dbml.append(col_def)
-        
-        dbml.append("}")
-        
-        return '\n'.join(dbml)
-    
-    def _generate_relationships_dbml(self):
-        """Generate DBML relationships"""
-        relationships = []
-        
-        for _, rel in self.relationships_df.iterrows():
-            from_table = self._sanitize_name(rel['From Table'])
-            from_col = self._sanitize_name(rel['From Column'])
-            to_table = self._sanitize_name(rel['To Table'])
-            to_col = self._sanitize_name(rel['To Column'])
-            
-            # Determine relationship type
-            from_card = str(rel['From Cardinality'])
-            to_card = str(rel['To Cardinality'])
-            
-            if from_card == '2' and to_card == '1':
-                rel_type = ">"  # many-to-one
-            elif from_card == '1' and to_card == '2':
-                rel_type = "<"  # one-to-many
-            elif from_card == '1' and to_card == '1':
-                rel_type = "-"  # one-to-one
-            else:
-                rel_type = ">"  # default to many-to-one
-            
-            # Add relationship
-            rel_line = f"Ref: {from_table}.{from_col} {rel_type} {to_table}.{to_col}"
-            
-            # Add cross-filter direction as note
-            cross_filter = rel['Cross Filter Direction']
-            if pd.notna(cross_filter):
-                rel_line += f" [note: 'Cross-filter: {cross_filter}']"
-            
-            relationships.append(rel_line)
-        
-        return relationships
-    
-    def generate_glossary_excel(self, output_file='semantic_model_glossary.xlsx'):
-        """Generate comprehensive glossary in Excel format with Semantic Model Name as first column"""
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            # Sheet 1: Tables Overview
-            tables_summary = self._create_tables_summary()
-            tables_summary.to_excel(writer, sheet_name='Tables Overview', index=False)
-            
-            # Sheet 2: All Columns
-            columns_glossary = self._create_columns_glossary()
-            columns_glossary.to_excel(writer, sheet_name='Columns Glossary', index=False)
-            
-            # Sheet 3: All Measures
-            measures_glossary = self._create_measures_glossary()
-            measures_glossary.to_excel(writer, sheet_name='Measures Glossary', index=False)
-            
-            # Sheet 4: Relationships (Enhanced with physical table/column info)
-            relationships_enhanced = self._create_relationships_glossary()
-            relationships_enhanced.to_excel(writer, sheet_name='Relationships', index=False)
-            
-            # Sheet 5: Data Lineage Summary
-            lineage_summary = self._create_data_lineage_summary()
-            lineage_summary.to_excel(writer, sheet_name='Data Lineage', index=False)
-            
-            # Sheet 6: Key Columns Summary
-            key_columns = self._create_key_columns_summary()
-            key_columns.to_excel(writer, sheet_name='Key Columns', index=False)
-            
-            # Sheet 7: Hidden Objects
-            hidden_objects = self._create_hidden_objects_summary()
-            hidden_objects.to_excel(writer, sheet_name='Hidden Objects', index=False)
-            
-            # Sheet 8: Model Summary Statistics
-            model_stats = self._create_model_statistics()
-            model_stats.to_excel(writer, sheet_name='Model Statistics', index=False)
-            
-            # Auto-adjust column widths
-            for sheet_name in writer.sheets:
-                worksheet = writer.sheets[sheet_name]
-                for column in worksheet.columns:
-                    max_length = 0
-                    column = [cell for cell in column]
-                    for cell in column:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(cell.value)
-                        except:
-                            pass
-                    adjusted_width = min(max_length + 2, 50)
-                    worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
-        
-        print(f"✅ Glossary Excel generated: {output_file}")
-        return output_file
-    
-    def _create_tables_summary(self):
+    def get_tables_summary(self):
         """Create tables overview summary with Semantic Model Name as first column"""
         summary = []
         
@@ -406,7 +191,7 @@ class PowerBIDocumentationGenerator:
         
         return pd.DataFrame(summary)
     
-    def _create_columns_glossary(self):
+    def get_columns_glossary(self):
         """Create detailed columns glossary with Semantic Model Name as first column and physical info"""
         glossary_data = []
         
@@ -451,7 +236,7 @@ class PowerBIDocumentationGenerator:
         
         return pd.DataFrame(glossary_data)
     
-    def _create_measures_glossary(self):
+    def get_measures_glossary(self):
         """Create measures glossary with Semantic Model Name as first column and DAX explanations"""
         measures_data = []
         
@@ -478,7 +263,7 @@ class PowerBIDocumentationGenerator:
         
         return pd.DataFrame(measures_data)
     
-    def _create_relationships_glossary(self):
+    def get_relationships_glossary(self):
         """Create enhanced relationships glossary with physical table/column info"""
         relationships_data = []
         
@@ -531,7 +316,7 @@ class PowerBIDocumentationGenerator:
         
         return pd.DataFrame(relationships_data)
     
-    def _create_data_lineage_summary(self):
+    def get_data_lineage_summary(self):
         """Create a data lineage summary showing physical to semantic mapping"""
         lineage_data = []
         
@@ -561,7 +346,7 @@ class PowerBIDocumentationGenerator:
         
         return pd.DataFrame(lineage_data)
     
-    def _create_key_columns_summary(self):
+    def get_key_columns_summary(self):
         """Create a summary of all key columns used in relationships"""
         key_data = []
         
@@ -606,7 +391,7 @@ class PowerBIDocumentationGenerator:
         
         return pd.DataFrame(key_data)
     
-    def _create_hidden_objects_summary(self):
+    def get_hidden_objects_summary(self):
         """Create a summary of all hidden columns and measures"""
         hidden_data = []
         
@@ -646,7 +431,7 @@ class PowerBIDocumentationGenerator:
         
         return pd.DataFrame(hidden_data)
     
-    def _create_model_statistics(self):
+    def get_model_statistics(self):
         """Create model-level statistics summary"""
         stats = []
         
@@ -767,8 +552,6 @@ class PowerBIDocumentationGenerator:
         dax = str(dax_formula)
         
         # Pattern: 'Table Name'[Column Name] or Table[Column]
-        import re
-        
         # Match table[column] patterns
         pattern = r"'?([^'\[\]]+)'?\[([^\]]+)\]"
         matches = re.findall(pattern, dax)
@@ -806,155 +589,6 @@ class PowerBIDocumentationGenerator:
             return "Automatic - Power BI determines filter direction"
         else:
             return str(cross_filter)
-    
-    def generate_mapping_excel(self, output_file='oracle_to_powerbi_mapping.xlsx'):
-        """Generate Oracle to Power BI mapping document"""
-        if self.mapping_df is None:
-            print("⚠️  No mapping file provided. Skipping mapping generation.")
-            return None
-        
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            # Add Semantic Model name to mapping
-            mapping_with_model = self.mapping_df.copy()
-            mapping_with_model.insert(0, 'Semantic Model', self.semantic_model_name)
-            
-            # Main mapping
-            mapping_with_model.to_excel(writer, sheet_name='Oracle to Power BI Mapping', index=False)
-            
-            # Summary by table
-            summary = self._create_mapping_summary()
-            summary.to_excel(writer, sheet_name='Mapping Summary', index=False)
-            
-            # Auto-adjust column widths
-            for sheet_name in writer.sheets:
-                worksheet = writer.sheets[sheet_name]
-                for column in worksheet.columns:
-                    max_length = 0
-                    column = [cell for cell in column]
-                    for cell in column:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(cell.value)
-                        except:
-                            pass
-                    adjusted_width = min(max_length + 2, 50)
-                    worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
-        
-        print(f"✅ Mapping Excel generated: {output_file}")
-        return output_file
-    
-    def _create_mapping_summary(self):
-        """Create mapping summary by table"""
-        if self.mapping_df is None:
-            return pd.DataFrame()
-        
-        summary = self.mapping_df.groupby('Oracle Presentation Table').agg({
-            'Oracle Presentation Column': 'count',
-            'FABRIC Physical Table': lambda x: x.nunique()
-        }).reset_index()
-        
-        summary.columns = ['Oracle Table', 'Column Count', 'Mapped to Power BI Tables']
-        summary.insert(0, 'Semantic Model', self.semantic_model_name)
-        
-        return summary
-    
-    def generate_er_diagram_mermaid(self, output_file='er_diagram.mmd'):
-        """Generate Mermaid ER diagram code"""
-        mermaid = [f"---"]
-        mermaid.append(f"title: {self.semantic_model_name} - Star Schema")
-        mermaid.append("---")
-        mermaid.append("erDiagram")
-        
-        # Add fact tables
-        for fact in self.fact_tables:
-            related_dims = self._get_related_dimensions(fact)
-            for dim in related_dims:
-                # Get relationship details
-                rel = self.relationships_df[
-                    ((self.relationships_df['From Table'] == fact) & 
-                     (self.relationships_df['To Table'] == dim)) |
-                    ((self.relationships_df['From Table'] == dim) & 
-                     (self.relationships_df['To Table'] == fact))
-                ]
-                
-                if not rel.empty:
-                    rel_row = rel.iloc[0]
-                    from_card = rel_row['From Cardinality']
-                    to_card = rel_row['To Cardinality']
-                    
-                    # Determine relationship notation
-                    if from_card == '2' and to_card == '1':
-                        notation = "}o--||"
-                    elif from_card == '1' and to_card == '2':
-                        notation = "||--o{"
-                    else:
-                        notation = "||--||"
-                    
-                    mermaid.append(f'    {self._sanitize_name(fact)} {notation} {self._sanitize_name(dim)} : "relates to"')
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(mermaid))
-        
-        print(f"✅ Mermaid ER diagram generated: {output_file}")
-        print(f"   You can visualize this at: https://mermaid.live/")
-        return output_file
-    
-    def _get_related_dimensions(self, fact_table):
-        """Get dimension tables related to a fact table"""
-        dimensions = set()
-        
-        # From fact to dimensions
-        rels_out = self.relationships_df[self.relationships_df['From Table'] == fact_table]
-        dimensions.update(rels_out['To Table'].unique())
-        
-        # From dimensions to fact
-        rels_in = self.relationships_df[self.relationships_df['To Table'] == fact_table]
-        dimensions.update(rels_in['From Table'].unique())
-        
-        return list(dimensions)
-    
-    # Utility methods
-    def _get_physical_table_name(self, table_name):
-        """Get the physical source table name (uses cache)"""
-        return self._physical_table_cache.get(table_name)
-    
-    def _get_physical_column_name(self, table_name, column_name):
-        """Get physical column name (uses cache)"""
-        return self._physical_column_cache.get((table_name, column_name))
-    
-    def _sanitize_name(self, name):
-        """Sanitize table/column names for DBML"""
-        if pd.isna(name):
-            return "unknown"
-        name = str(name).strip()
-        # Replace spaces and special characters
-        name = name.replace(' ', '_').replace('-', '_').replace('/', '_')
-        # Remove invalid characters
-        name = ''.join(c for c in name if c.isalnum() or c == '_')
-        return name
-    
-    def _escape_string(self, s):
-        """Escape strings for DBML notes"""
-        if pd.isna(s):
-            return ""
-        return str(s).replace("'", "\\'").replace('\n', ' ').replace('\r', '')
-    
-    def _map_data_type(self, pbi_type):
-        """Map Power BI data types to DBML types"""
-        if pd.isna(pbi_type):
-            return "varchar"
-        
-        type_map = {
-            'Int64': 'bigint',
-            'String': 'varchar',
-            'Decimal': 'decimal',
-            'Double': 'double',
-            'DateTime': 'datetime',
-            'Boolean': 'boolean',
-            'Date': 'date'
-        }
-        
-        return type_map.get(str(pbi_type), 'varchar')
     
     def _explain_dax(self, dax_formula):
         """Provide simple explanation for DAX formulas"""
@@ -997,48 +631,441 @@ class PowerBIDocumentationGenerator:
             explanations.append("Year-over-year comparison")
         
         return '; '.join(explanations) if explanations else "Custom calculation"
+
+
+class MultiModelDocumentationGenerator:
+    """Generator that handles multiple semantic models and combines them into one output"""
+    
+    def __init__(self, source_directory, mapping_file=None):
+        """Initialize with source directory containing semantic model CSV files
+        
+        Args:
+            source_directory: Path to directory containing *_COLUMNS.csv, *_MEASURES.csv, *_RELATIONSHIPS.csv files
+            mapping_file: Optional path to mapping file (CSV or Excel)
+        """
+        self.source_directory = source_directory
+        self.mapping_df = None
+        
+        # Read mapping file if provided
+        if mapping_file and os.path.exists(mapping_file):
+            if mapping_file.endswith('.xlsx') or mapping_file.endswith('.xls'):
+                self.mapping_df = pd.read_excel(mapping_file)
+            else:
+                try:
+                    self.mapping_df = pd.read_csv(mapping_file, encoding='utf-8')
+                except UnicodeDecodeError:
+                    self.mapping_df = pd.read_csv(mapping_file, encoding='latin-1')
+        
+        # Discover semantic models
+        self.semantic_models = self._discover_semantic_models()
+        
+    def _discover_semantic_models(self):
+        """Discover all semantic models in the source directory based on file naming pattern"""
+        models = {}
+        
+        # Find all COLUMNS files
+        columns_files = glob.glob(os.path.join(self.source_directory, '*_COLUMNS.csv'))
+        
+        for columns_file in columns_files:
+            # Extract semantic model name from file name
+            base_name = os.path.basename(columns_file)
+            # Remove _COLUMNS.csv suffix to get model name
+            model_name = base_name.replace('_COLUMNS.csv', '')
+            
+            # Check if corresponding MEASURES and RELATIONSHIPS files exist
+            measures_file = os.path.join(self.source_directory, f'{model_name}_MEASURES.csv')
+            relationships_file = os.path.join(self.source_directory, f'{model_name}_RELATIONSHIPS.csv')
+            
+            if os.path.exists(measures_file) and os.path.exists(relationships_file):
+                models[model_name] = {
+                    'columns_file': columns_file,
+                    'measures_file': measures_file,
+                    'relationships_file': relationships_file
+                }
+            else:
+                # Check for partial matches (missing files)
+                missing = []
+                if not os.path.exists(measures_file):
+                    missing.append('MEASURES')
+                if not os.path.exists(relationships_file):
+                    missing.append('RELATIONSHIPS')
+                print(f"⚠️  Semantic Model '{model_name}' is missing files: {', '.join(missing)}")
+        
+        return models
+    
+    def _read_csv_with_encoding(self, file_path):
+        """Read CSV file with encoding fallback"""
+        try:
+            return pd.read_csv(file_path, encoding='utf-8')
+        except UnicodeDecodeError:
+            return pd.read_csv(file_path, encoding='latin-1')
+    
+    def generate_combined_glossary(self, output_file='semantic_model_glossary.xlsx'):
+        """Generate a combined glossary Excel file with all semantic models"""
+        
+        if not self.semantic_models:
+            print("❌ No complete semantic models found in the directory.")
+            return None
+        
+        print(f"\n🚀 Processing {len(self.semantic_models)} Semantic Model(s)...\n")
+        
+        # Initialize combined DataFrames
+        all_tables_summary = []
+        all_columns_glossary = []
+        all_measures_glossary = []
+        all_relationships = []
+        all_data_lineage = []
+        all_key_columns = []
+        all_hidden_objects = []
+        all_model_stats = []
+        
+        # Process each semantic model
+        for model_name, files in sorted(self.semantic_models.items()):
+            print(f"📊 Processing: {model_name}")
+            
+            try:
+                # Read CSV files
+                columns_df = self._read_csv_with_encoding(files['columns_file'])
+                measures_df = self._read_csv_with_encoding(files['measures_file'])
+                relationships_df = self._read_csv_with_encoding(files['relationships_file'])
+                
+                # Create generator for this model
+                generator = PowerBIDocumentationGenerator(
+                    columns_df=columns_df,
+                    measures_df=measures_df,
+                    relationships_df=relationships_df,
+                    semantic_model_name=model_name,
+                    mapping_df=self.mapping_df
+                )
+                
+                # Get data for each sheet
+                all_tables_summary.append(generator.get_tables_summary())
+                all_columns_glossary.append(generator.get_columns_glossary())
+                all_measures_glossary.append(generator.get_measures_glossary())
+                all_relationships.append(generator.get_relationships_glossary())
+                all_data_lineage.append(generator.get_data_lineage_summary())
+                all_key_columns.append(generator.get_key_columns_summary())
+                all_hidden_objects.append(generator.get_hidden_objects_summary())
+                all_model_stats.append(generator.get_model_statistics())
+                
+                print(f"   ✅ Processed: {len(columns_df)} columns, {len(measures_df)} measures, {len(relationships_df)} relationships")
+                
+            except Exception as e:
+                print(f"   ❌ Error processing {model_name}: {str(e)}")
+                continue
+        
+        # Combine all DataFrames
+        print(f"\n📝 Combining data from all models...")
+        
+        combined_tables = pd.concat(all_tables_summary, ignore_index=True) if all_tables_summary else pd.DataFrame()
+        combined_columns = pd.concat(all_columns_glossary, ignore_index=True) if all_columns_glossary else pd.DataFrame()
+        combined_measures = pd.concat(all_measures_glossary, ignore_index=True) if all_measures_glossary else pd.DataFrame()
+        combined_relationships = pd.concat(all_relationships, ignore_index=True) if all_relationships else pd.DataFrame()
+        combined_lineage = pd.concat(all_data_lineage, ignore_index=True) if all_data_lineage else pd.DataFrame()
+        combined_keys = pd.concat(all_key_columns, ignore_index=True) if all_key_columns else pd.DataFrame()
+        combined_hidden = pd.concat(all_hidden_objects, ignore_index=True) if all_hidden_objects else pd.DataFrame()
+        combined_stats = pd.concat(all_model_stats, ignore_index=True) if all_model_stats else pd.DataFrame()
+        
+        # Write to Excel
+        print(f"📄 Writing to Excel: {output_file}")
+        
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            # Sheet 1: Tables Overview
+            if not combined_tables.empty:
+                combined_tables.to_excel(writer, sheet_name='Tables Overview', index=False)
+            
+            # Sheet 2: All Columns
+            if not combined_columns.empty:
+                combined_columns.to_excel(writer, sheet_name='Columns Glossary', index=False)
+            
+            # Sheet 3: All Measures
+            if not combined_measures.empty:
+                combined_measures.to_excel(writer, sheet_name='Measures Glossary', index=False)
+            
+            # Sheet 4: Relationships
+            if not combined_relationships.empty:
+                combined_relationships.to_excel(writer, sheet_name='Relationships', index=False)
+            
+            # Sheet 5: Data Lineage Summary
+            if not combined_lineage.empty:
+                combined_lineage.to_excel(writer, sheet_name='Data Lineage', index=False)
+            
+            # Sheet 6: Key Columns Summary
+            if not combined_keys.empty:
+                combined_keys.to_excel(writer, sheet_name='Key Columns', index=False)
+            
+            # Sheet 7: Hidden Objects
+            if not combined_hidden.empty:
+                combined_hidden.to_excel(writer, sheet_name='Hidden Objects', index=False)
+            
+            # Sheet 8: Model Summary Statistics
+            if not combined_stats.empty:
+                combined_stats.to_excel(writer, sheet_name='Model Statistics', index=False)
+            
+            # Auto-adjust column widths
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_cells = [cell for cell in column]
+                    for cell in column_cells:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_cells[0].column_letter].width = adjusted_width
+        
+        print(f"\n✅ Glossary Excel generated: {output_file}")
+        return output_file
+    
+    def generate_dbml_files(self, output_dir='output'):
+        """Generate individual DBML files for each semantic model"""
+        Path(output_dir).mkdir(exist_ok=True)
+        
+        generated_files = []
+        
+        for model_name, files in sorted(self.semantic_models.items()):
+            try:
+                columns_df = self._read_csv_with_encoding(files['columns_file'])
+                measures_df = self._read_csv_with_encoding(files['measures_file'])
+                relationships_df = self._read_csv_with_encoding(files['relationships_file'])
+                
+                generator = PowerBIDocumentationGenerator(
+                    columns_df=columns_df,
+                    measures_df=measures_df,
+                    relationships_df=relationships_df,
+                    semantic_model_name=model_name,
+                    mapping_df=self.mapping_df
+                )
+                
+                # Generate DBML
+                safe_name = model_name.replace(' ', '_').replace('-', '_')
+                dbml_file = os.path.join(output_dir, f'{safe_name}.dbml')
+                generator.generate_dbml(dbml_file)
+                generated_files.append(dbml_file)
+                
+            except Exception as e:
+                print(f"   ❌ Error generating DBML for {model_name}: {str(e)}")
+        
+        return generated_files
     
     def generate_all_documents(self, output_dir='output'):
-        """Generate all documentation at once"""
+        """Generate all documentation for all semantic models"""
         # Create output directory
         Path(output_dir).mkdir(exist_ok=True)
         
-        print(f"🚀 Generating Power BI documentation for: {self.semantic_model_name}\n")
-        
-        # Generate DBML
-        dbml_file = os.path.join(output_dir, 'semantic_model.dbml')
-        self.generate_dbml(dbml_file)
-        
-        # Generate Glossary
-        glossary_file = os.path.join(output_dir, 'semantic_model_glossary.xlsx')
-        self.generate_glossary_excel(glossary_file)
-        
-        # Generate Mapping (if available)
-        if self.mapping_df is not None:
-            mapping_file = os.path.join(output_dir, 'oracle_to_powerbi_mapping.xlsx')
-            self.generate_mapping_excel(mapping_file)
-        
-        # Generate ER Diagram (Mermaid)
-        er_file = os.path.join(output_dir, 'er_diagram.mmd')
-        self.generate_er_diagram_mermaid(er_file)
-        
-        print("\n✅ All documents generated successfully!")
+        print("=" * 60)
+        print("🚀 Power BI Semantic Model Documentation Generator")
+        print("=" * 60)
+        print(f"\n📁 Source directory: {self.source_directory}")
         print(f"📁 Output directory: {output_dir}")
-        print(f"\n📊 Semantic Model: {self.semantic_model_name}")
-        print("\n📋 Generated files:")
-        print(f"   1. {dbml_file} - DBML schema with star schema layout")
-        print(f"   2. {glossary_file} - Complete glossary with:")
-        print(f"      • Tables Overview (with physical source tables)")
-        print(f"      • Columns Glossary (with physical source columns)")
-        print(f"      • Measures Glossary (with DAX explanations)")
-        print(f"      • Relationships (with ETL source table/column info)")
-        print(f"      • Data Lineage (physical to semantic mapping)")
-        print(f"      • Key Columns (relationship keys summary)")
-        print(f"      • Hidden Objects (hidden columns and measures)")
-        print(f"      • Model Statistics (summary metrics)")
+        print(f"📊 Discovered {len(self.semantic_models)} complete Semantic Model(s):")
+        for model_name in sorted(self.semantic_models.keys()):
+            print(f"   • {model_name}")
+        
+        # Generate combined glossary
+        glossary_file = os.path.join(output_dir, 'semantic_model_glossary.xlsx')
+        self.generate_combined_glossary(glossary_file)
+        
+        # Generate individual DBML files
+        print(f"\n📐 Generating DBML files...")
+        dbml_files = self.generate_dbml_files(output_dir)
+        
+        # Generate mapping if available
         if self.mapping_df is not None:
-            print(f"   3. {mapping_file} - Oracle to Power BI mapping")
-        print(f"   4. {er_file} - Mermaid ER diagram (visualize at mermaid.live)")
+            mapping_output = os.path.join(output_dir, 'oracle_to_powerbi_mapping.xlsx')
+            mapping_with_header = self.mapping_df.copy()
+            mapping_with_header.to_excel(mapping_output, index=False)
+            print(f"✅ Mapping file copied: {mapping_output}")
+        
+        print("\n" + "=" * 60)
+        print("✅ All documents generated successfully!")
+        print("=" * 60)
+        print(f"\n📋 Generated files in '{output_dir}':")
+        print(f"   1. semantic_model_glossary.xlsx - Combined glossary with 8 sheets:")
+        print(f"      • Tables Overview")
+        print(f"      • Columns Glossary")
+        print(f"      • Measures Glossary")
+        print(f"      • Relationships (with ETL source info)")
+        print(f"      • Data Lineage")
+        print(f"      • Key Columns")
+        print(f"      • Hidden Objects")
+        print(f"      • Model Statistics")
+        
+        if dbml_files:
+            print(f"\n   2. DBML files ({len(dbml_files)} files):")
+            for f in dbml_files:
+                print(f"      • {os.path.basename(f)}")
+        
+        return glossary_file
+
+
+# Additional method for PowerBIDocumentationGenerator to generate DBML
+def generate_dbml(self, output_file='semantic_model.dbml'):
+    """Generate DBML file with star schema layout"""
+    dbml_content = []
+    
+    # Header
+    dbml_content.append("// Power BI Semantic Model - Star Schema")
+    dbml_content.append(f"// Semantic Model: {self.semantic_model_name}")
+    dbml_content.append(f"// Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    dbml_content.append("// Star Schema: Facts in center, Dimensions around them\n")
+    
+    # Project definition
+    safe_name = self.semantic_model_name.replace(' ', '_').replace('-', '_')
+    safe_name = ''.join(c for c in safe_name if c.isalnum() or c == '_')
+    dbml_content.append(f"Project {safe_name} {{")
+    dbml_content.append("  database_type: 'Power BI'")
+    dbml_content.append(f"  Note: 'Semantic Model: {self.semantic_model_name}'")
+    dbml_content.append("}\n")
+    
+    # Generate Fact Tables first (center of star schema)
+    dbml_content.append("// ===== FACT TABLES =====")
+    for table in self.fact_tables:
+        dbml_content.append(self._generate_table_dbml(table, is_fact=True))
+    
+    dbml_content.append("\n// ===== DIMENSION TABLES =====")
+    for table in self.dim_tables:
+        dbml_content.append(self._generate_table_dbml(table, is_fact=False))
+    
+    # Generate relationships
+    dbml_content.append("\n// ===== RELATIONSHIPS =====")
+    dbml_content.extend(self._generate_relationships_dbml())
+    
+    # Write to file
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(dbml_content))
+    
+    print(f"   ✅ DBML file generated: {output_file}")
+    return output_file
+
+def _generate_table_dbml(self, table_name, is_fact=False):
+    """Generate DBML for a single table"""
+    table_data = self.columns_df[self.columns_df['Table'] == table_name]
+    
+    if table_data.empty:
+        return ""
+    
+    # Get physical table name from cache
+    physical_table = self._physical_table_cache.get(table_name)
+    
+    # Sanitize table name
+    safe_table_name = table_name.replace(' ', '_').replace('-', '_').replace('/', '_')
+    safe_table_name = ''.join(c for c in safe_table_name if c.isalnum() or c == '_')
+    
+    dbml = [f"\nTable {safe_table_name} {{"]
+    
+    # Add physical table name in comment
+    if physical_table and physical_table.lower() != table_name.lower():
+        dbml.append(f"  // Physical/Source Table: {physical_table}")
+    
+    # Add table description if available
+    table_desc = table_data['Table Description'].iloc[0] if 'Table Description' in table_data.columns else None
+    if pd.notna(table_desc):
+        escaped_desc = str(table_desc).replace("'", "\\'").replace('\n', ' ').replace('\r', '')
+        dbml.append(f"  Note: '{escaped_desc}'")
+    
+    # Map data types
+    type_map = {
+        'Int64': 'bigint',
+        'String': 'varchar',
+        'Decimal': 'decimal',
+        'Double': 'double',
+        'DateTime': 'datetime',
+        'Boolean': 'boolean',
+        'Date': 'date'
+    }
+    
+    # Add columns
+    for _, col in table_data.iterrows():
+        col_name = col['Column'].replace(' ', '_').replace('-', '_').replace('/', '_')
+        col_name = ''.join(c for c in col_name if c.isalnum() or c == '_')
+        
+        pbi_type = col.get('Data Type', 'varchar')
+        data_type = type_map.get(str(pbi_type), 'varchar') if pd.notna(pbi_type) else 'varchar'
+        
+        # Build column definition
+        col_def = f"  {col_name} {data_type}"
+        
+        # Add primary key indicator
+        if pd.notna(col.get('Is Key')) and str(col['Is Key']).lower() == 'true':
+            col_def += " [pk]"
+        
+        # Build note with description and physical column name
+        note_parts = []
+        
+        # Add column description
+        col_desc = col.get('Column Description')
+        if pd.notna(col_desc):
+            escaped = str(col_desc).replace("'", "\\'").replace('\n', ' ').replace('\r', '')
+            note_parts.append(escaped)
+        
+        # Add physical source info from cache
+        physical_col = self._physical_column_cache.get((table_name, col['Column']))
+        if physical_col and physical_col.lower() != col['Column'].lower():
+            note_parts.append(f"Physical Column: {physical_col}")
+        
+        # Add source table if different
+        if physical_table and physical_table.lower() != table_name.lower():
+            note_parts.append(f"Source Table: {physical_table}")
+        
+        if note_parts:
+            col_def += f" [note: '{' | '.join(note_parts)}']"
+        
+        dbml.append(col_def)
+    
+    dbml.append("}")
+    
+    return '\n'.join(dbml)
+
+def _generate_relationships_dbml(self):
+    """Generate DBML relationships"""
+    relationships = []
+    
+    for _, rel in self.relationships_df.iterrows():
+        from_table = rel['From Table'].replace(' ', '_').replace('-', '_').replace('/', '_')
+        from_table = ''.join(c for c in from_table if c.isalnum() or c == '_')
+        
+        from_col = rel['From Column'].replace(' ', '_').replace('-', '_').replace('/', '_')
+        from_col = ''.join(c for c in from_col if c.isalnum() or c == '_')
+        
+        to_table = rel['To Table'].replace(' ', '_').replace('-', '_').replace('/', '_')
+        to_table = ''.join(c for c in to_table if c.isalnum() or c == '_')
+        
+        to_col = rel['To Column'].replace(' ', '_').replace('-', '_').replace('/', '_')
+        to_col = ''.join(c for c in to_col if c.isalnum() or c == '_')
+        
+        # Determine relationship type
+        from_card = str(rel.get('From Cardinality', ''))
+        to_card = str(rel.get('To Cardinality', ''))
+        
+        if from_card == '2' and to_card == '1':
+            rel_type = ">"  # many-to-one
+        elif from_card == '1' and to_card == '2':
+            rel_type = "<"  # one-to-many
+        elif from_card == '1' and to_card == '1':
+            rel_type = "-"  # one-to-one
+        else:
+            rel_type = ">"  # default to many-to-one
+        
+        # Add relationship
+        rel_line = f"Ref: {from_table}.{from_col} {rel_type} {to_table}.{to_col}"
+        
+        # Add cross-filter direction as note
+        cross_filter = rel.get('Cross Filter Direction')
+        if pd.notna(cross_filter):
+            rel_line += f" [note: 'Cross-filter: {cross_filter}']"
+        
+        relationships.append(rel_line)
+    
+    return relationships
+
+# Add methods to the class
+PowerBIDocumentationGenerator.generate_dbml = generate_dbml
+PowerBIDocumentationGenerator._generate_table_dbml = _generate_table_dbml
+PowerBIDocumentationGenerator._generate_relationships_dbml = _generate_relationships_dbml
 
 
 # Example usage
@@ -1047,61 +1074,33 @@ if __name__ == "__main__":
     current_directory = os.getcwd()
     
     print(f"📁 Current working directory: {current_directory}")
-    print(f"📂 Looking for files in: {current_directory}\n")
+    print(f"📂 Looking for Semantic Model files in: {current_directory}\n")
     
-    # Define file paths - UPDATE THESE WITH YOUR ACTUAL FILENAMES
-    columns_file = os.path.join(current_directory, 'SemanticModelName_COLUMNS.csv')
-    measures_file = os.path.join(current_directory, 'SemanticModelName_MEASURES.csv')
-    relationships_file = os.path.join(current_directory, 'SemanticModelName_RELATIONSHIPS.csv')
-    mapping_file = os.path.join(current_directory, 'RPDtoPBI_Mapping_Draft.xlsx')  # Optional
-    
-    # Optional: Specify semantic model name explicitly
-    # If not provided, it will be derived from the columns file name
-    semantic_model_name = None  # e.g., "Sales Analytics Model"
-    
-    # Check if files exist before proceeding
-    files_to_check = {
-        'Columns': columns_file,
-        'Measures': measures_file,
-        'Relationships': relationships_file,
-        'Mapping': mapping_file
-    }
-    
-    missing_files = []
-    for file_type, file_path in files_to_check.items():
-        if os.path.exists(file_path):
-            print(f"✅ Found {file_type} file: {os.path.basename(file_path)}")
-        else:
-            print(f"❌ Missing {file_type} file: {os.path.basename(file_path)}")
-            missing_files.append(file_type)
-    
-    # If critical files are missing, show available files and exit
-    if 'Columns' in missing_files or 'Measures' in missing_files or 'Relationships' in missing_files:
-        print(f"\n⚠️  Critical files are missing. Please check your file names.")
-        print(f"\n📋 Available CSV/XLSX files in current directory:")
-        for file in os.listdir(current_directory):
-            if file.endswith(('.csv', '.xlsx')):
-                print(f"   - {file}")
-        print(f"\n💡 Update the file names in the script to match your actual files.")
-        exit(1)
-    
-    # Set mapping_file to None if it doesn't exist
-    if 'Mapping' in missing_files:
+    # Optional: Path to mapping file
+    mapping_file = os.path.join(current_directory, 'RPDtoPBI_Mapping_Draft.xlsx')
+    if not os.path.exists(mapping_file):
         mapping_file = None
-        print(f"\nℹ️  Mapping file not found. Will skip mapping generation.\n")
+        print(f"ℹ️  No mapping file found (RPDtoPBI_Mapping_Draft.xlsx)")
+    else:
+        print(f"✅ Found mapping file: RPDtoPBI_Mapping_Draft.xlsx")
     
-    # Initialize generator
+    # Initialize the multi-model generator
     try:
-        generator = PowerBIDocumentationGenerator(
-            columns_file=columns_file,
-            measures_file=measures_file,
-            relationships_file=relationships_file,
-            mapping_file=mapping_file,
-            semantic_model_name=semantic_model_name  # Optional: pass explicit name
+        generator = MultiModelDocumentationGenerator(
+            source_directory=current_directory,
+            mapping_file=mapping_file
         )
         
-        # Generate all documents
-        generator.generate_all_documents(output_dir='powerbi_documentation')
+        if generator.semantic_models:
+            # Generate all documents
+            generator.generate_all_documents(output_dir='powerbi_documentation')
+        else:
+            print("\n❌ No complete semantic models found.")
+            print("\n📋 Looking for files matching pattern: *_COLUMNS.csv, *_MEASURES.csv, *_RELATIONSHIPS.csv")
+            print("\n📋 Available CSV files in current directory:")
+            for file in sorted(os.listdir(current_directory)):
+                if file.endswith('.csv'):
+                    print(f"   - {file}")
         
     except Exception as e:
         print(f"\n❌ Error occurred: {str(e)}")
