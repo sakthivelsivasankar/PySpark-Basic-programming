@@ -49,6 +49,9 @@ class PowerBIDocumentationGenerator:
         # Detect the measure name column (could be 'Measure', 'Name', 'Measure Name', etc.)
         self.measure_name_column = self._detect_measure_name_column()
         
+        # Detect the measure type column (could be 'Type', 'Object Type', etc.)
+        self.measure_type_column = self._detect_measure_type_column()
+        
         # Build physical table/column lookup cache for performance
         self._build_physical_mapping_cache()
         
@@ -66,14 +69,24 @@ class PowerBIDocumentationGenerator:
                 return col_name
         
         # If no match, return the first column that's not a known metadata column
-        # IMPORTANT: Exclude 'Type' as it contains category info, not measure names
-        exclude_cols = ['Table', 'Type', 'Description', 'DAX Expression', 'Is Hidden', 
+        # IMPORTANT: Exclude type-related columns as they contain category info, not measure names
+        exclude_cols = ['Table', 'Type', 'Object Type', 'ObjectType', 'Kind', 'Category',
+                        'Description', 'DAX Expression', 'Is Hidden', 
                         'Format String', 'Display Folder', 'Expression', 'Data Type',
                         'Data Category', 'Is Key', 'Column Type', 'Summarize By']
         for col in self.measures_df.columns:
             if col not in exclude_cols:
                 return col
         return 'Measure'  # Default fallback
+    
+    def _detect_measure_type_column(self):
+        """Detect the column name used for measure type (Measure, Calculated Table, etc.)"""
+        # Priority order for type columns
+        possible_names = ['Type', 'Object Type', 'ObjectType', 'Kind', 'Category', 'Measure Type']
+        for col_name in possible_names:
+            if col_name in self.measures_df.columns:
+                return col_name
+        return None  # No type column found
     
     def _build_physical_mapping_cache(self):
         """Build a cache of physical table and column mappings for quick lookup"""
@@ -337,13 +350,24 @@ class PowerBIDocumentationGenerator:
         if not hasattr(self, '_measures_columns_printed'):
             print(f"   📋 Measures CSV columns: {list(self.measures_df.columns)}")
             print(f"   📋 Detected measure name column: '{self.measure_name_column}'")
+            print(f"   📋 Detected measure type column: '{self.measure_type_column}'")
             self._measures_columns_printed = True
         
         for _, row in self.measures_df.iterrows():
             table_name = safe_str(row.get('Table', ''))
             
-            # Get measure type (Measure, Calculated Table, etc.)
-            measure_type = safe_str(row.get('Type', ''))
+            # Get measure type (Measure, Calculated Table, etc.) using detected column
+            measure_type = ''
+            if self.measure_type_column:
+                measure_type = safe_str(row.get(self.measure_type_column, ''))
+            
+            # If type column not found, try common names
+            if not measure_type:
+                for type_col in ['Type', 'Object Type', 'ObjectType', 'Kind', 'Category']:
+                    if type_col in row.index:
+                        measure_type = safe_str(row.get(type_col, ''))
+                        if measure_type:
+                            break
             
             # Get measure name using detected column
             measure_name = safe_str(row.get(self.measure_name_column, ''))
@@ -611,8 +635,16 @@ class PowerBIDocumentationGenerator:
                                     measure_name = candidate
                                     break
                     
-                    # Get measure type
-                    measure_type = safe_str(row.get('Type', 'Measure'))
+                    # Get measure type using detected column
+                    measure_type = ''
+                    if self.measure_type_column:
+                        measure_type = safe_str(row.get(self.measure_type_column, ''))
+                    if not measure_type:
+                        for type_col in ['Type', 'Object Type', 'ObjectType', 'Kind', 'Category']:
+                            if type_col in row.index:
+                                measure_type = safe_str(row.get(type_col, ''))
+                                if measure_type:
+                                    break
                     
                     hidden_data.append({
                         'Semantic Model': self.semantic_model_name,
