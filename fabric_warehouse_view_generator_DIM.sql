@@ -65,18 +65,22 @@ ORDER BY TableName;
 -- 3. Copy to a new query window
 -- 4. Execute the copied DDL
 
--- First: Schema creation (run this separately first)
-SELECT 0 AS Seq, 'SCHEMA' AS Type, '-- Create schema' AS ViewName,
-'IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ''DATAMART_DIM'') EXEC(''CREATE SCHEMA [DATAMART_DIM]'');' AS DDL
+-- Schema creation
+SELECT 0 AS Seq, 'SCHEMA' AS Type, 'Schema' AS ViewName,
+'IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ''DATAMART_DIM'') EXEC(''CREATE SCHEMA [DATAMART_DIM]'');
+GO' AS DDL
 
 UNION ALL
 
--- Then: All view DDL statements
+-- All view DDL statements with GO separators
 SELECT 
     sub.Seq,
     'VIEW' AS Type,
     sub.ViewName,
-    'DROP VIEW IF EXISTS [DATAMART_DIM].[' + sub.ViewName + ']; CREATE VIEW [DATAMART_DIM].[' + sub.ViewName + '] AS SELECT ' + sub.ColumnList + ' FROM [ELT_ANALYTICS].[' + sub.TableName + '];' AS DDL
+    'DROP VIEW IF EXISTS [DATAMART_DIM].[' + sub.ViewName + '];
+GO
+CREATE VIEW [DATAMART_DIM].[' + sub.ViewName + '] AS SELECT ' + sub.ColumnList + ' FROM [ELT_ANALYTICS].[' + sub.TableName + '];
+GO' AS DDL
 FROM (
     SELECT 
         ROW_NUMBER() OVER (ORDER BY CONVERT(VARCHAR(8000), t.name)) AS Seq,

@@ -96,22 +96,24 @@ ORDER BY sub.TableName;
 -- 3. Copy to a new query window
 -- 4. Execute the copied DDL
 
--- First: Schema creation
+-- Schema creation
 SELECT 0 AS Seq, 'SCHEMA' AS Type, 'Schema' AS ViewName, 'None' AS RLS,
-'IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ''DATAMART_FACT'') EXEC(''CREATE SCHEMA [DATAMART_FACT]'');' AS DDL
+'IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ''DATAMART_FACT'') EXEC(''CREATE SCHEMA [DATAMART_FACT]'');
+GO' AS DDL
 
 UNION ALL
 
--- All view DDL statements with RLS joins
+-- All view DDL statements with GO separators and RLS joins
 SELECT 
     sub.Seq,
     'VIEW' AS Type,
     sub.ViewName,
     sub.RLSStatus AS RLS,
-    'DROP VIEW IF EXISTS [DATAMART_FACT].[' + sub.ViewName + ']; ' +
-    'CREATE VIEW [DATAMART_FACT].[' + sub.ViewName + '] AS SELECT ' + sub.ColumnList + 
-    ' FROM [ELT_ANALYTICS].[' + sub.TableName + '] fact' +
-    sub.JoinClause + ';' AS DDL
+    'DROP VIEW IF EXISTS [DATAMART_FACT].[' + sub.ViewName + '];
+GO
+CREATE VIEW [DATAMART_FACT].[' + sub.ViewName + '] AS SELECT ' + sub.ColumnList + 
+    ' FROM [ELT_ANALYTICS].[' + sub.TableName + '] fact' + sub.JoinClause + ';
+GO' AS DDL
 FROM (
     SELECT 
         ROW_NUMBER() OVER (ORDER BY CONVERT(VARCHAR(8000), t.name)) AS Seq,
@@ -121,12 +123,6 @@ FROM (
             'fact.[' + CONVERT(VARCHAR(8000), c.name) COLLATE Latin1_General_100_BIN2_UTF8 + ']',
             ', '
         ) WITHIN GROUP (ORDER BY c.column_id) AS ColumnList,
-        COALESCE(rls.BridgeTable, '') AS BridgeTable,
-        COALESCE(rls.BridgeAlias, '') AS BridgeAlias,
-        COALESCE(rls.JoinColumn, '') AS JoinColumn,
-        COALESCE(rls.PKColumn, '') AS PKColumn,
-        COALESCE(rls.GeoColumn, '') AS GeoColumn,
-        COALESCE(rls.SegColumn, '') AS SegColumn,
         CASE 
             WHEN rls.FactTableName IS NULL THEN 'NO CONFIG'
             WHEN rls.GeoColumn IS NULL AND rls.SegColumn IS NULL THEN 'None'
