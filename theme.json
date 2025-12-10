@@ -81,7 +81,7 @@
             "fontFamily": "Arial",
             "fontSize": 12,
             "bold": true,
-            "alignment": "left"
+            "alignment": "Left"
           }
         ]
       }
@@ -128,16 +128,14 @@
             "fontColor": {"solid": {"color": "#7F35B2"}},
             "fontFamily": "Arial",
             "fontSize": 9,
-            "bold": true,
-            "background": {"solid": {"color": "transparent"}}
+            "bold": true
           }
         ],
         "items": [
           {
             "fontColor": {"solid": {"color": "#7F35B2"}},
             "fontFamily": "Arial",
-            "fontSize": 9,
-            "background": {"solid": {"color": "transparent"}}
+            "fontSize": 9
           }
         ],
         "numericInputStyle": [
@@ -177,7 +175,6 @@
             "fontSize": 9,
             "bold": true,
             "backColor": {"solid": {"color": "#E8E8E8"}},
-            "alignment": "left",
             "wordWrap": true
           }
         ],
@@ -230,7 +227,6 @@
             "fontSize": 9,
             "bold": true,
             "backColor": {"solid": {"color": "#E8E8E8"}},
-            "alignment": "center",
             "wordWrap": true
           }
         ],
@@ -240,7 +236,6 @@
             "fontFamily": "Arial",
             "fontSize": 9,
             "backColor": {"solid": {"color": "#FFFFFF"}},
-            "alignment": "left",
             "wordWrap": true
           }
         ],
