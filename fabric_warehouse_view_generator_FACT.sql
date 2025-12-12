@@ -20,6 +20,8 @@ Source Schema:  ELT_ANALYTICS         (search: ELT_ANALYTICS)
 Target Schema:  DATAMART_FACT         (search: DATAMART_FACT)
 Table Prefix:   FACT_                 (search: FACT_)
 View Prefix:    VW_                   (search: VW_)
+Security GEO:   WTWSecurityGEOSec     (search: WTWSecurityGEOSec)
+Security SEG:   WTWSecuritySEGSec     (search: WTWSecuritySEGSec)
 --------------------------------------------------------------------------------
 */
 
@@ -73,7 +75,7 @@ LEFT JOIN (
         ('FACT_AR_AGING_INVOICE',       NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',    'WC_TEAM_CODE'),
         ('FACT_UTILIZATION',            NULL, NULL, NULL, NULL, 'OFFICE_CODE',       'TEAM_CODE'),
         ('FACT_WAVG_FTE_MONTH_AGG',     NULL, NULL, NULL, NULL, 'OFFICE_CODE',       'TEAM_CODE'),
-        ('FACT_WIP_ERP_AGING',          NULL, NULL, NULL, NULL, 'PROJECT_GL_OFFICE', 'PROJECT_GL_TEAM'),
+        ('FACT_WIP_ERP_AGING',          NULL, NULL, NULL, NULL, 'PROJECT_GL_OFFICE_ID', 'PROJECT_GL_TEAM_ID'),
         ('FACT_PROJECT_COMMITMENTS',    'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
         ('FACT_PROJECT_EXPENDITURES',   'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
         ('FACT_PROJECT_EXPENSE_LINES',  'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
@@ -142,7 +144,7 @@ FROM (
                     END, '') +
                 COALESCE(
                     CASE WHEN rls.GeoColumn IS NOT NULL 
-                        THEN ' INNER JOIN [ELT_ANALYTICS].[WTWSecurityGEO] GEO ON ' +
+                        THEN ' INNER JOIN [ELT_ANALYTICS].[WTWSecurityGEOSec] GEO ON ' +
                              CASE WHEN rls.BridgeTable IS NOT NULL 
                                  THEN rls.BridgeAlias + '.[' + rls.GeoColumn + ']'
                                  ELSE 'fact.[' + rls.GeoColumn + ']'
@@ -151,7 +153,7 @@ FROM (
                     END, '') +
                 COALESCE(
                     CASE WHEN rls.SegColumn IS NOT NULL 
-                        THEN ' INNER JOIN [ELT_ANALYTICS].[WTWSecuritySEG] TEAM ON ' +
+                        THEN ' INNER JOIN [ELT_ANALYTICS].[WTWSecuritySEGSec] TEAM ON ' +
                              CASE WHEN rls.BridgeTable IS NOT NULL 
                                  THEN rls.BridgeAlias + '.[' + rls.SegColumn + ']'
                                  ELSE 'fact.[' + rls.SegColumn + ']'
@@ -171,7 +173,7 @@ FROM (
             ('FACT_AR_AGING_INVOICE',       NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',    'WC_TEAM_CODE'),
             ('FACT_UTILIZATION',            NULL, NULL, NULL, NULL, 'OFFICE_CODE',       'TEAM_CODE'),
             ('FACT_WAVG_FTE_MONTH_AGG',     NULL, NULL, NULL, NULL, 'OFFICE_CODE',       'TEAM_CODE'),
-            ('FACT_WIP_ERP_AGING',          NULL, NULL, NULL, NULL, 'PROJECT_GL_OFFICE', 'PROJECT_GL_TEAM'),
+            ('FACT_WIP_ERP_AGING',          NULL, NULL, NULL, NULL, 'PROJECT_GL_OFFICE_ID', 'PROJECT_GL_TEAM_ID'),
             ('FACT_PROJECT_COMMITMENTS',    'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
             ('FACT_PROJECT_EXPENDITURES',   'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
             ('FACT_PROJECT_EXPENSE_LINES',  'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
