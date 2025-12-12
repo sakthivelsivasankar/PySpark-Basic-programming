@@ -23,6 +23,26 @@ View Prefix:    VW_                   (search: VW_)
 Security GEO:   WTWSecurityGEOSec     (search: WTWSecurityGEOSec)
 Security SEG:   WTWSecuritySEGSec     (search: WTWSecuritySEGSec)
 --------------------------------------------------------------------------------
+
+IGNORE TABLE FILTERS:
+--------------------------------------------------------------------------------
+Table name CONTAINS (keyword filter):
+  - _TMP
+  - _STAGE
+  - TEMP, temp, TEST, test, BACKUP, backup, Archive, ARCHIVE
+  - STG, DUMMY, _BKP, _OLS, _CLS, _VY, _TW, _T, _1, _2
+
+Specific tables to IGNORE:
+  - FACT_CUST_LOC_USE_PERSIST_REV
+  - FACT_HR_INTERIM_ROSTER_STAGE
+  - FACT_PARTY_CONTACT_PERSIST_REV
+  - FACT_WEVT_EQ_TMP
+  - FACT_WEVT_SUP_EQ_TMP
+  - FACT_WRKFC_EVT_EQ_TMP
+  - FACT_WRKFC_EVT_MONTH_EQ_TMP
+  - FACT_WRKFC_EVENT_AGE
+  - FACT_WRKFC_EVENT_POW
+--------------------------------------------------------------------------------
 */
 
 -- ============================================================================
@@ -47,6 +67,9 @@ FROM (
     INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
     WHERE CONVERT(VARCHAR(8000), s.name) COLLATE Latin1_General_100_BIN2_UTF8 = 'ELT_ANALYTICS'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 LIKE 'FACT_%'
+      -- Keyword filters (CONTAINS)
+      AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_TMP%'
+      AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_STAGE%'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%TEMP%'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%temp%'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%test%'
@@ -65,6 +88,18 @@ FROM (
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_T'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_1'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_2'
+      -- Specific tables to IGNORE
+      AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT IN (
+          'FACT_CUST_LOC_USE_PERSIST_REV',
+          'FACT_HR_INTERIM_ROSTER_STAGE',
+          'FACT_PARTY_CONTACT_PERSIST_REV',
+          'FACT_WEVT_EQ_TMP',
+          'FACT_WEVT_SUP_EQ_TMP',
+          'FACT_WRKFC_EVT_EQ_TMP',
+          'FACT_WRKFC_EVT_MONTH_EQ_TMP',
+          'FACT_WRKFC_EVENT_AGE',
+          'FACT_WRKFC_EVENT_POW'
+      )
 ) sub
 LEFT JOIN (
     SELECT * FROM (VALUES
@@ -120,8 +155,6 @@ LEFT JOIN (
         ('FACT_CUST_LOC_USE_PERSIST',   NULL, NULL, NULL, NULL, NULL, NULL),
         ('FACT_DMN_WEVT_TYP_PERSIST',   NULL, NULL, NULL, NULL, NULL, NULL),
         ('FACT_PARTY_CONTACT_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
-        ('FACT_WRKFC_EVENT_AGE',        NULL, NULL, NULL, NULL, NULL, NULL),
-        ('FACT_WRKFC_EVENT_POW',        NULL, NULL, NULL, NULL, NULL, NULL),
         ('FACT_WRKFC_EVT_FTE_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
         ('FACT_WRKFC_EVT_GRT_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
         ('FACT_WRKFC_EVT_HDC_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
@@ -270,8 +303,6 @@ FROM (
             ('FACT_CUST_LOC_USE_PERSIST',   NULL, NULL, NULL, NULL, NULL, NULL),
             ('FACT_DMN_WEVT_TYP_PERSIST',   NULL, NULL, NULL, NULL, NULL, NULL),
             ('FACT_PARTY_CONTACT_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
-            ('FACT_WRKFC_EVENT_AGE',        NULL, NULL, NULL, NULL, NULL, NULL),
-            ('FACT_WRKFC_EVENT_POW',        NULL, NULL, NULL, NULL, NULL, NULL),
             ('FACT_WRKFC_EVT_FTE_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
             ('FACT_WRKFC_EVT_GRT_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
             ('FACT_WRKFC_EVT_HDC_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
@@ -290,6 +321,9 @@ FROM (
     ) rls ON CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 = rls.FactTableName COLLATE Latin1_General_100_BIN2_UTF8
     WHERE CONVERT(VARCHAR(8000), s.name) COLLATE Latin1_General_100_BIN2_UTF8 = 'ELT_ANALYTICS'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 LIKE 'FACT_%'
+      -- Keyword filters (CONTAINS)
+      AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_TMP%'
+      AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_STAGE%'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%TEMP%'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%temp%'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%test%'
@@ -308,6 +342,18 @@ FROM (
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_T'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_1'
       AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT LIKE '%_2'
+      -- Specific tables to IGNORE
+      AND CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 NOT IN (
+          'FACT_CUST_LOC_USE_PERSIST_REV',
+          'FACT_HR_INTERIM_ROSTER_STAGE',
+          'FACT_PARTY_CONTACT_PERSIST_REV',
+          'FACT_WEVT_EQ_TMP',
+          'FACT_WEVT_SUP_EQ_TMP',
+          'FACT_WRKFC_EVT_EQ_TMP',
+          'FACT_WRKFC_EVT_MONTH_EQ_TMP',
+          'FACT_WRKFC_EVENT_AGE',
+          'FACT_WRKFC_EVENT_POW'
+      )
     GROUP BY t.name, rls.FactTableName, rls.BridgeTable, rls.BridgeAlias, rls.JoinColumn, rls.PKColumn, rls.GeoColumn, rls.SegColumn
 ) sub
 ORDER BY Seq;
