@@ -68,22 +68,74 @@ FROM (
 ) sub
 LEFT JOIN (
     SELECT * FROM (VALUES
-        ('FACT_PROJECT_REVENUE_LINES',  NULL, NULL, NULL, NULL, 'GEO_KEY',           'SEGMENT_KEY'),
-        ('FACT_PROJECT_COST_LINES',     NULL, NULL, NULL, NULL, 'GEO_KEY',           'SEGMENT_KEY'),
-        ('FACT_REV_BILL_AR_AGG',        NULL, NULL, NULL, NULL, 'OFFICE',            'TEAM'),
-        ('FACT_AR_ERP_AGING',           NULL, NULL, NULL, NULL, 'GL_OFFICE_CODE',    'GL_TEAM_CODE'),
-        ('FACT_AR_AGING_INVOICE',       NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',    'WC_TEAM_CODE'),
-        ('FACT_UTILIZATION',            NULL, NULL, NULL, NULL, 'OFFICE_CODE',       'TEAM_CODE'),
-        ('FACT_WAVG_FTE_MONTH_AGG',     NULL, NULL, NULL, NULL, 'OFFICE_CODE',       'TEAM_CODE'),
+        -- ===== DIRECT JOIN - Financial/Revenue Tables =====
+        ('FACT_PROJECT_REVENUE_LINES',  NULL, NULL, NULL, NULL, 'GEO_KEY',              'SEGMENT_KEY'),
+        ('FACT_PROJECT_COST_LINES',     NULL, NULL, NULL, NULL, 'GEO_KEY',              'SEGMENT_KEY'),
+        ('FACT_REV_BILL_AR_AGG',        NULL, NULL, NULL, NULL, 'OFFICE',               'TEAM'),
+        ('FACT_REV_BILL_AR_AGG_ITD',    NULL, NULL, NULL, NULL, 'OFFICE',               'TEAM'),
+        
+        -- ===== DIRECT JOIN - AR Tables =====
+        ('FACT_AR_ERP_AGING',           NULL, NULL, NULL, NULL, 'GL_OFFICE_CODE',       'GL_TEAM_CODE'),
+        ('FACT_AR_AGING_INVOICE',       NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+        ('FACT_AR_XACT',                NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+        ('FACT_AR_XACT_REV',            NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+        
+        -- ===== DIRECT JOIN - Utilization/FTE Tables =====
+        ('FACT_UTILIZATION',            NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+        ('FACT_WAVG_FTE_MONTH_AGG',     NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+        ('FACT_WAVG_FTE_DAILY_AGG',     NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
         ('FACT_WIP_ERP_AGING',          NULL, NULL, NULL, NULL, 'PROJECT_GL_OFFICE_ID', 'PROJECT_GL_TEAM_ID'),
+        
+        -- ===== DIRECT JOIN - Employee/HR Tables =====
+        ('FACT_CUR_EMPLOYEE_RATE',      NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+        ('FACT_PA_BILL_RATES',          NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+        ('FACT_HR_INTERIM_ROSTER',      NULL, NULL, NULL, NULL, 'COSTING_OFFICE_CODE',  'TEAM_CODE'),
+        ('FACT_HR_INTERIM_ROSTER_MONTH',NULL, NULL, NULL, NULL, 'COSTING_OFFICE_CODE',  'TEAM_CODE'),
+        ('FACT_HR_INTERIM_SNAPSHOT',    NULL, NULL, NULL, NULL, 'COSTING_OFFICE_CODE',  'TEAM_CODE'),
+        
+        -- ===== DIRECT JOIN - Workforce Event Tables =====
+        ('FACT_WEVT_PERSIST',           NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+        ('FACT_WRKFC_EVENT_MERGE',      NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+        ('FACT_WRKFC_EVENT_MONTH',      NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+        ('FACT_WRKFC_EVT_ASG_PERSIST',  NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+        
+        -- ===== BRIDGE JOIN - via DIM_PROJECT_DEFINITION =====
         ('FACT_PROJECT_COMMITMENTS',    'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
         ('FACT_PROJECT_EXPENDITURES',   'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
         ('FACT_PROJECT_EXPENSE_LINES',  'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
         ('FACT_PROJECT_BUDGET_LINES',   'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
         ('FACT_PROJECTS_PROFITABILITY', 'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
+        ('FACT_PROJECT_BUDGET',         'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
+        ('FACT_PROJECT_CC_COST',        'DIM_PROJECT_DEFINITION', 'Proj', 'IC_PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
+        ('FACT_PROJECT_INVOICE_LINES',  'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
+        
+        -- ===== BRIDGE JOIN - via DIM_EMPLOYEE =====
         ('FACT_OTL_SUMMARY',            'DIM_EMPLOYEE', 'emp', 'RESOURCE_ID',  'EMPLOYEE_NUM', 'WC_SEGMENT3_OFFICE', 'WC_SEGMENT4_TEAM'),
         ('FACT_PROJ_TIMECARD',          'DIM_EMPLOYEE', 'emp', 'ASSOC_ID',     'EMPLOYEE_NUM', 'WC_SEGMENT3_OFFICE', 'WC_SEGMENT4_TEAM'),
-        ('FACT_WRKNG_DAYS_MONTH_AGG',   NULL, NULL, NULL, NULL, NULL, NULL)
+        
+        -- ===== NO RLS - Working Days (no GEO/SEG columns) =====
+        ('FACT_WRKNG_DAYS_MONTH_AGG',   NULL, NULL, NULL, NULL, NULL, NULL),
+        
+        -- ===== NO RLS - Persist tables without GEO/SEG columns =====
+        ('FACT_CUST_LOC_USE_PERSIST',   NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_DMN_WEVT_TYP_PERSIST',   NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_PARTY_CONTACT_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVENT_AGE',        NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVENT_POW',        NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_FTE_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_GRT_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_HDC_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_PERF_PERSIST', NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_POW_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_PSN_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_PTYP_PERSIST', NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_SAL_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_EVT_SUP_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_WRKFC_SUPV_STATUS_PERSIST', NULL, NULL, NULL, NULL, NULL, NULL),
+        
+        -- ===== NO RLS - Revenue Headers (uses PROJECT_KEY not PROJECT_ID) =====
+        ('FACT_PROJECT_REVENUE_HEADERS', NULL, NULL, NULL, NULL, NULL, NULL),
+        ('FACT_PROJ_GL_RECNCLIATION',   NULL, NULL, NULL, NULL, NULL, NULL)
     ) AS R(FactTableName, BridgeTable, BridgeAlias, JoinColumn, PKColumn, GeoColumn, SegColumn)
 ) rls ON sub.TableName COLLATE Latin1_General_100_BIN2_UTF8 = rls.FactTableName COLLATE Latin1_General_100_BIN2_UTF8
 ORDER BY sub.TableName;
@@ -166,22 +218,74 @@ FROM (
     INNER JOIN sys.columns c ON t.object_id = c.object_id
     LEFT JOIN (
         SELECT * FROM (VALUES
-            ('FACT_PROJECT_REVENUE_LINES',  NULL, NULL, NULL, NULL, 'GEO_KEY',           'SEGMENT_KEY'),
-            ('FACT_PROJECT_COST_LINES',     NULL, NULL, NULL, NULL, 'GEO_KEY',           'SEGMENT_KEY'),
-            ('FACT_REV_BILL_AR_AGG',        NULL, NULL, NULL, NULL, 'OFFICE',            'TEAM'),
-            ('FACT_AR_ERP_AGING',           NULL, NULL, NULL, NULL, 'GL_OFFICE_CODE',    'GL_TEAM_CODE'),
-            ('FACT_AR_AGING_INVOICE',       NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',    'WC_TEAM_CODE'),
-            ('FACT_UTILIZATION',            NULL, NULL, NULL, NULL, 'OFFICE_CODE',       'TEAM_CODE'),
-            ('FACT_WAVG_FTE_MONTH_AGG',     NULL, NULL, NULL, NULL, 'OFFICE_CODE',       'TEAM_CODE'),
+            -- ===== DIRECT JOIN - Financial/Revenue Tables =====
+            ('FACT_PROJECT_REVENUE_LINES',  NULL, NULL, NULL, NULL, 'GEO_KEY',              'SEGMENT_KEY'),
+            ('FACT_PROJECT_COST_LINES',     NULL, NULL, NULL, NULL, 'GEO_KEY',              'SEGMENT_KEY'),
+            ('FACT_REV_BILL_AR_AGG',        NULL, NULL, NULL, NULL, 'OFFICE',               'TEAM'),
+            ('FACT_REV_BILL_AR_AGG_ITD',    NULL, NULL, NULL, NULL, 'OFFICE',               'TEAM'),
+            
+            -- ===== DIRECT JOIN - AR Tables =====
+            ('FACT_AR_ERP_AGING',           NULL, NULL, NULL, NULL, 'GL_OFFICE_CODE',       'GL_TEAM_CODE'),
+            ('FACT_AR_AGING_INVOICE',       NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+            ('FACT_AR_XACT',                NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+            ('FACT_AR_XACT_REV',            NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+            
+            -- ===== DIRECT JOIN - Utilization/FTE Tables =====
+            ('FACT_UTILIZATION',            NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+            ('FACT_WAVG_FTE_MONTH_AGG',     NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+            ('FACT_WAVG_FTE_DAILY_AGG',     NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
             ('FACT_WIP_ERP_AGING',          NULL, NULL, NULL, NULL, 'PROJECT_GL_OFFICE_ID', 'PROJECT_GL_TEAM_ID'),
+            
+            -- ===== DIRECT JOIN - Employee/HR Tables =====
+            ('FACT_CUR_EMPLOYEE_RATE',      NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+            ('FACT_PA_BILL_RATES',          NULL, NULL, NULL, NULL, 'OFFICE_CODE',          'TEAM_CODE'),
+            ('FACT_HR_INTERIM_ROSTER',      NULL, NULL, NULL, NULL, 'COSTING_OFFICE_CODE',  'TEAM_CODE'),
+            ('FACT_HR_INTERIM_ROSTER_MONTH',NULL, NULL, NULL, NULL, 'COSTING_OFFICE_CODE',  'TEAM_CODE'),
+            ('FACT_HR_INTERIM_SNAPSHOT',    NULL, NULL, NULL, NULL, 'COSTING_OFFICE_CODE',  'TEAM_CODE'),
+            
+            -- ===== DIRECT JOIN - Workforce Event Tables =====
+            ('FACT_WEVT_PERSIST',           NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+            ('FACT_WRKFC_EVENT_MERGE',      NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+            ('FACT_WRKFC_EVENT_MONTH',      NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+            ('FACT_WRKFC_EVT_ASG_PERSIST',  NULL, NULL, NULL, NULL, 'WC_OFFICE_CODE',       'WC_TEAM_CODE'),
+            
+            -- ===== BRIDGE JOIN - via DIM_PROJECT_DEFINITION =====
             ('FACT_PROJECT_COMMITMENTS',    'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
             ('FACT_PROJECT_EXPENDITURES',   'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
             ('FACT_PROJECT_EXPENSE_LINES',  'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
             ('FACT_PROJECT_BUDGET_LINES',   'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
             ('FACT_PROJECTS_PROFITABILITY', 'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
+            ('FACT_PROJECT_BUDGET',         'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
+            ('FACT_PROJECT_CC_COST',        'DIM_PROJECT_DEFINITION', 'Proj', 'IC_PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
+            ('FACT_PROJECT_INVOICE_LINES',  'DIM_PROJECT_DEFINITION', 'Proj', 'PROJECT_ID', 'PROJECT_ID', 'WC_OFFICE_CODE', 'WC_TEAM_CODE'),
+            
+            -- ===== BRIDGE JOIN - via DIM_EMPLOYEE =====
             ('FACT_OTL_SUMMARY',            'DIM_EMPLOYEE', 'emp', 'RESOURCE_ID',  'EMPLOYEE_NUM', 'WC_SEGMENT3_OFFICE', 'WC_SEGMENT4_TEAM'),
             ('FACT_PROJ_TIMECARD',          'DIM_EMPLOYEE', 'emp', 'ASSOC_ID',     'EMPLOYEE_NUM', 'WC_SEGMENT3_OFFICE', 'WC_SEGMENT4_TEAM'),
-            ('FACT_WRKNG_DAYS_MONTH_AGG',   NULL, NULL, NULL, NULL, NULL, NULL)
+            
+            -- ===== NO RLS - Working Days (no GEO/SEG columns) =====
+            ('FACT_WRKNG_DAYS_MONTH_AGG',   NULL, NULL, NULL, NULL, NULL, NULL),
+            
+            -- ===== NO RLS - Persist tables without GEO/SEG columns =====
+            ('FACT_CUST_LOC_USE_PERSIST',   NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_DMN_WEVT_TYP_PERSIST',   NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_PARTY_CONTACT_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVENT_AGE',        NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVENT_POW',        NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_FTE_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_GRT_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_HDC_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_PERF_PERSIST', NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_POW_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_PSN_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_PTYP_PERSIST', NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_SAL_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_EVT_SUP_PERSIST',  NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_WRKFC_SUPV_STATUS_PERSIST', NULL, NULL, NULL, NULL, NULL, NULL),
+            
+            -- ===== NO RLS - Revenue Headers (uses PROJECT_KEY not PROJECT_ID) =====
+            ('FACT_PROJECT_REVENUE_HEADERS', NULL, NULL, NULL, NULL, NULL, NULL),
+            ('FACT_PROJ_GL_RECNCLIATION',   NULL, NULL, NULL, NULL, NULL, NULL)
         ) AS R(FactTableName, BridgeTable, BridgeAlias, JoinColumn, PKColumn, GeoColumn, SegColumn)
     ) rls ON CONVERT(VARCHAR(8000), t.name) COLLATE Latin1_General_100_BIN2_UTF8 = rls.FactTableName COLLATE Latin1_General_100_BIN2_UTF8
     WHERE CONVERT(VARCHAR(8000), s.name) COLLATE Latin1_General_100_BIN2_UTF8 = 'ELT_ANALYTICS'
